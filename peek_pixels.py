@@ -49,6 +49,26 @@ def validate_box(x: int, y: int, n: int, size: Tuple[int, int]) -> None:
         )
 
 
+def get_patch(fpath: str, x: int, y: int, n: int) -> Image.Image:
+    """Get an N x N pixel patch from the image at (x, y)"""
+    if not os.path.exists(fpath):
+        raise FileNotFoundError(f"File not found: {fpath}")
+    
+    # Load image (first frame if multi-frame TIFF)
+    im = load_first_frame(fpath)
+    w, h = im.size
+    
+    # Validate and crop
+    validate_box(x, y, n, (w, h))
+    
+    box = (x, y, x + n, y + n)
+    patch = im.crop(box)
+    
+    # Ensure patch is in a standard format
+    if patch.mode not in ("RGB", "RGBA", "L"):
+        patch = patch.convert("RGB")
+    return patch
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Print image size and show an N x N pixel block at (X, Y)."
@@ -63,26 +83,18 @@ def main() -> None:
 
     x, y, n, fpath = args.X, args.Y, args.N, args.F
 
-    if not os.path.exists(fpath):
-        print(f"File not found: {fpath}", file=sys.stderr)
+    try:
+        patch = get_patch(fpath, x, y, n)
+    except (FileNotFoundError, ValueError) as e:
+        print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
-
-    # Load image (first frame if multi-frame TIFF)
+    
+    # Load original image to print info
     im = load_first_frame(fpath)
     w, h = im.size
     print(f"Image: {fpath}")
     print(f"Mode: {im.mode}")
     print(f"Dimensions (WxH): {w} x {h} pixels")
-
-    # Validate and crop
-    try:
-        validate_box(x, y, n, (w, h))
-    except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(2)
-
-    box = (x, y, x + n, y + n)
-    patch = im.crop(box)
 
     # Convert to a NumPy array for readable printing
     arr = np.array(patch)
@@ -100,10 +112,6 @@ def main() -> None:
     root, _ = os.path.splitext(base)
     out_name = f"{root}_patch_x{x}_y{y}_n{n}.png"
     out_path = os.path.join(os.getcwd(), out_name)
-
-    # Ensure patch is saved in a standard format
-    if patch.mode not in ("RGB", "RGBA", "L"):
-        patch = patch.convert("RGB")
     patch.save(out_path)
     print(f"\nSaved patch image to: {out_path}")
 
