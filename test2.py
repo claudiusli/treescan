@@ -7,6 +7,7 @@ and calls get_patch from peek_pixels.
 
 import sys
 from peek_pixels import get_patch, load_first_frame
+from analyze import analyze_image
 
 
 def main():
@@ -14,8 +15,8 @@ def main():
         print("Usage: python test_peek_pixels.py <image_file> <N>")
         sys.exit(1)
 
-    fpath = sys.argv[2]
-    n = int(sys.argv[1])
+    fpath = sys.argv[1]
+    n = int(sys.argv[2])
 
     # Get the image dimensions
     im = load_first_frame(fpath)
@@ -25,8 +26,9 @@ def main():
     while y + n <= height:
         while x + n <= width:
             patch = get_patch(fpath, x, y, n)
-            # Not doing anything with the patch yet
             print(f"Patch at (x={x}, y={y})")
+            # Analyze the patch
+            analyze_image(patch)
             x += 1
         x = 0
         y += 1
