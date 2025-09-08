@@ -57,6 +57,7 @@ def stream(ow_file, tw_file, window, train_size, test_size):
 
     return train_ds, test_ds
 
+def examine(loader):
 
 # Example usage
 if __name__ == "__main__":
@@ -109,4 +110,3 @@ if __name__ == "__main__":
     examine(train_loader)
     examine(test_loader)
 
-def examine(loader):
