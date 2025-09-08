@@ -60,15 +60,32 @@ def stream(ow_file, tw_file, window, train_size, test_size):
 
 # Example usage
 if __name__ == "__main__":
-    # Parameters
-    ow_file = "images/ow_snip.tif"
-    tw_file = "images/tw_snip.tif"
-    window = 64
-    train_size = 1000
-    test_size = 200
-
-    train, test = stream(ow_file, tw_file, window, train_size, test_size)
+    import argparse
+    
+    # Set up argument parser
+    parser = argparse.ArgumentParser(description='Create train and test datasets for image classification')
+    parser.add_argument('--ow_file', type=str, required=True, 
+                        help='Path to the OW image file')
+    parser.add_argument('--tw_file', type=str, required=True,
+                        help='Path to the TW image file')
+    parser.add_argument('--window', type=int, required=True,
+                        help='Window size for cropping patches')
+    parser.add_argument('--train_size', type=int, required=True,
+                        help='Number of samples in the training dataset')
+    parser.add_argument('--test_size', type=int, required=True,
+                        help='Number of samples in the test dataset')
+    parser.add_argument('--batch_size', type=int, default=64,
+                        help='Batch size for DataLoader (default: 64)')
+    
+    # Parse arguments
+    args = parser.parse_args()
+    
+    # Create datasets using provided arguments
+    train, test = stream(args.ow_file, args.tw_file, args.window, args.train_size, args.test_size)
 
     # Create data loaders
-    train_loader = DataLoader(train, batch_size=64, num_workers=0)
-    test_loader = DataLoader(test, batch_size=64, num_workers=0)
+    train_loader = DataLoader(train, batch_size=args.batch_size, num_workers=0)
+    test_loader = DataLoader(test, batch_size=args.batch_size, num_workers=0)
+    
+    print(f"Created train loader with {len(train_loader)} batches")
+    print(f"Created test loader with {len(test_loader)} batches")
