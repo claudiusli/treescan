@@ -3,6 +3,8 @@ import random
 from PIL import Image
 import os
 import torch
+import torch.nn as nn
+import torch.optim as optim
 
 
 class StreamDS(IterableDataset):
@@ -75,6 +77,26 @@ def pil_collate_fn(batch):
 
     return images_stacked, labels_stacked
 
+
+# Define a simple CNN
+class SimpleCNN(nn.Module):
+    def __init__(self):
+        super(SimpleCNN, self).__init__()
+        self.conv1 = nn.Conv2d(3, 32, 3, padding=1)
+        self.pool = nn.MaxPool2d(2, 2)
+        self.conv2 = nn.Conv2d(32, 64, 3, padding=1)
+        self.fc1 = nn.Linear(64 * (window // 4) * (window // 4), 64)
+        self.fc2 = nn.Linear(64, 2)
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(0.5)
+        
+    def forward(self, x):
+        x = self.pool(self.relu(self.conv1(x)))
+        x = self.pool(self.relu(self.conv2(x)))
+        x = x.view(-1, 64 * (window // 4) * (window // 4))
+        x = self.dropout(self.relu(self.fc1(x)))
+        x = self.fc2(x)
+        return x
 
 # Create train and test datasets
 def stream(ow_file, tw_file, window, train_size, test_size):
@@ -189,8 +211,76 @@ if __name__ == "__main__":
         test, batch_size=args.batch_size, num_workers=0, collate_fn=pil_collate_fn
     )
 
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
+    # Define the network
+    class SimpleCNN(nn.Module):
+        def __init__(self, window):
+            super(SimpleCNN, self).__init__()
+            self.conv1 = nn.Conv2d(3, 32, 3, padding=1)
+            self.pool = nn.MaxPool2d(2, 2)
+            self.conv2 = nn.Conv2d(32, 64, 3, padding=1)
+            self.fc1 = nn.Linear(64 * (window // 4) * (window // 4), 64)
+            self.fc2 = nn.Linear(64, 2)
+            self.relu = nn.ReLU()
+            self.dropout = nn.Dropout(0.5)
+            
+        def forward(self, x):
+            x = self.pool(self.relu(self.conv1(x)))
+            x = self.pool(self.relu(self.conv2(x)))
+            x = x.view(-1, 64 * (args.window // 4) * (args.window // 4))
+            x = self.dropout(self.relu(self.fc1(x)))
+            x = self.fc2(x)
+            return x
 
-    # examine(train_loader)
-    # examine(test_loader)
+    net = SimpleCNN(args.window)
+
+    # Initialize the network, loss function, and optimizer
+    net = SimpleCNN()
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(net.parameters(), lr=0.001)
+    
+    # Training loop
+    num_epochs = 10
+    for epoch in range(num_epochs):
+        running_loss = 0.0
+        for i, data in enumerate(train_loader, 0):
+            # Get the inputs; data is a list of [inputs, labels]
+            inputs, labels = data
+            
+            # Convert labels to tensor indices
+            label_indices = [0 if label == 'ow' else 1 for label in labels]
+            label_tensor = torch.tensor(label_indices)
+            
+            # Zero the parameter gradients
+            optimizer.zero_grad()
+            
+            # Forward + backward + optimize
+            outputs = net(inputs.float())
+            loss = criterion(outputs, label_tensor)
+            loss.backward()
+            optimizer.step()
+            
+            # Print statistics
+            running_loss += loss.item()
+            if i % 100 == 99:    # Print every 100 mini-batches
+                print(f'Epoch {epoch + 1}, Batch {i + 1}, Loss: {running_loss / 100:.3f}')
+                running_loss = 0.0
+    
+    print('Finished Training')
+    
+    # Testing loop
+    correct = 0
+    total = 0
+    with torch.no_grad():
+        for data in test_loader:
+            images, labels = data
+            # Convert labels to tensor indices
+            label_indices = [0 if label == 'ow' else 1 for label in labels]
+            label_tensor = torch.tensor(label_indices)
+            
+            outputs = net(images.float())
+            _, predicted = torch.max(outputs.data, 1)
+            total += label_tensor.size(0)
+            correct += (predicted == label_tensor).sum().item()
+    
+    accuracy = 100 * correct / total
+    print(f'Accuracy on the test set: {accuracy:.2f}%')
