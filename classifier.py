@@ -50,28 +50,31 @@ def pil_collate_fn(batch):
     Converts PIL Images to tensors and stacks them.
     """
     images, labels = zip(*batch)
-    
+
     # Convert PIL Images to tensors
     image_tensors = []
     for img in images:
         # Convert PIL Image to tensor
         if isinstance(img, Image.Image):
             # Convert to RGB if needed
-            if img.mode != 'RGB':
-                img = img.convert('RGB')
+            if img.mode != "RGB":
+                img = img.convert("RGB")
             # Convert to tensor
-            img_tensor = torch.tensor(list(img.getdata())).view(img.size[1], img.size[0], 3)
+            img_tensor = torch.tensor(list(img.getdata())).view(
+                img.size[1], img.size[0], 3
+            )
             img_tensor = img_tensor.permute(2, 0, 1)  # Change to (C, H, W)
             image_tensors.append(img_tensor)
         else:
             # If it's already a tensor, just use it
             image_tensors.append(img)
-    
+
     # Stack images and labels
     images_stacked = torch.stack(image_tensors)
     labels_stacked = list(labels)
-    
+
     return images_stacked, labels_stacked
+
 
 # Create train and test datasets
 def stream(ow_file, tw_file, window, train_size, test_size):
@@ -87,50 +90,52 @@ def stream(ow_file, tw_file, window, train_size, test_size):
 
     return train_ds, test_ds
 
+
 def examine(loader):
     print("=== Examining DataLoader ===")
-    
+
     # Track some metadata
     total_batches = 0
     total_samples = 0
     label_counts = {"ow": 0, "tw": 0}
     image_shapes = set()
-    
+
     # Examine a few batches to gather information
     for i, batch in enumerate(loader):
         if i >= 5:  # Only look at first 5 batches to avoid consuming too much
             break
-            
+
         total_batches += 1
         # Unpack the batch
         samples, labels = batch
         total_samples += len(samples)
-        
+
         # Count labels
         for label in labels:
             if label == "ow":
                 label_counts["ow"] += 1
             elif label == "tw":
                 label_counts["tw"] += 1
-        
+
         # Record image shapes (now tensors)
         for sample in samples:
-            if hasattr(sample, 'shape'):
+            if hasattr(sample, "shape"):
                 image_shapes.add(tuple(sample.shape))
-    
+
     # Print the gathered metadata
     print(f"Number of batches examined: {total_batches}")
     print(f"Total samples examined: {total_samples}")
     print(f"Label distribution: {label_counts}")
     print(f"Image shapes: {image_shapes}")
-    
+
     # Calculate percentages
     if total_samples > 0:
         ow_percent = (label_counts["ow"] / total_samples) * 100
         tw_percent = (label_counts["tw"] / total_samples) * 100
         print(f"Label percentages: OW: {ow_percent:.2f}%, TW: {tw_percent:.2f}%")
-    
+
     print("Note: Only examined first 5 batches to avoid consuming the entire iterator")
+
 
 # Example usage
 if __name__ == "__main__":
@@ -177,9 +182,15 @@ if __name__ == "__main__":
     )
 
     # Create data loaders with custom collate function
-    train_loader = DataLoader(train, batch_size=args.batch_size, num_workers=0, collate_fn=pil_collate_fn)
-    test_loader = DataLoader(test, batch_size=args.batch_size, num_workers=0, collate_fn=pil_collate_fn)
+    train_loader = DataLoader(
+        train, batch_size=args.batch_size, num_workers=0, collate_fn=pil_collate_fn
+    )
+    test_loader = DataLoader(
+        test, batch_size=args.batch_size, num_workers=0, collate_fn=pil_collate_fn
+    )
 
-    examine(train_loader)
-    examine(test_loader)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
 
+    # examine(train_loader)
+    # examine(test_loader)
