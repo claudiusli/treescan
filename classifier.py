@@ -58,6 +58,61 @@ def stream(ow_file, tw_file, window, train_size, test_size):
     return train_ds, test_ds
 
 def examine(loader):
+    print("=== Examining DataLoader ===")
+    
+    # Track some metadata
+    total_batches = 0
+    total_samples = 0
+    label_counts = {"ow": 0, "tw": 0}
+    image_sizes = set()
+    image_modes = set()
+    
+    # Examine a few batches to gather information
+    for i, batch in enumerate(loader):
+        if i >= 5:  # Only look at first 5 batches to avoid consuming too much
+            break
+            
+        total_batches += 1
+        # Unpack the batch
+        samples, labels = batch
+        total_samples += len(samples)
+        
+        # Count labels
+        for label in labels:
+            if label == "ow":
+                label_counts["ow"] += 1
+            elif label == "tw":
+                label_counts["tw"] += 1
+        
+        # Record image metadata
+        for sample in samples:
+            # Check if it's a PIL Image
+            if isinstance(sample, Image.Image):
+                image_sizes.add(sample.size)
+                image_modes.add(sample.mode)
+            else:
+                # Handle other types (tensors, etc.)
+                if hasattr(sample, 'size'):
+                    image_sizes.add(sample.size)
+                elif hasattr(sample, 'shape'):
+                    image_sizes.add(tuple(sample.shape))
+                # Add type information
+                print(f"Sample type: {type(sample)}")
+    
+    # Print the gathered metadata
+    print(f"Number of batches examined: {total_batches}")
+    print(f"Total samples examined: {total_samples}")
+    print(f"Label distribution: {label_counts}")
+    print(f"Image sizes: {image_sizes}")
+    print(f"Image modes: {image_modes}")
+    
+    # Calculate percentages
+    if total_samples > 0:
+        ow_percent = (label_counts["ow"] / total_samples) * 100
+        tw_percent = (label_counts["tw"] / total_samples) * 100
+        print(f"Label percentages: OW: {ow_percent:.2f}%, TW: {tw_percent:.2f}%")
+    
+    print("Note: Only examined first 5 batches to avoid consuming the entire iterator")
 
 # Example usage
 if __name__ == "__main__":
