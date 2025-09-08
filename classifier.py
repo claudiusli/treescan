@@ -2,6 +2,7 @@ from torch.utils.data import IterableDataset, DataLoader
 import random
 from PIL import Image
 import os
+import torch
 
 
 class StreamDS(IterableDataset):
@@ -43,6 +44,35 @@ class StreamDS(IterableDataset):
                 yield patch, label
 
 
+def pil_collate_fn(batch):
+    """
+    Custom collate function to handle PIL Images in batches.
+    Converts PIL Images to tensors and stacks them.
+    """
+    images, labels = zip(*batch)
+    
+    # Convert PIL Images to tensors
+    image_tensors = []
+    for img in images:
+        # Convert PIL Image to tensor
+        if isinstance(img, Image.Image):
+            # Convert to RGB if needed
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            # Convert to tensor
+            img_tensor = torch.tensor(list(img.getdata())).view(img.size[1], img.size[0], 3)
+            img_tensor = img_tensor.permute(2, 0, 1)  # Change to (C, H, W)
+            image_tensors.append(img_tensor)
+        else:
+            # If it's already a tensor, just use it
+            image_tensors.append(img)
+    
+    # Stack images and labels
+    images_stacked = torch.stack(image_tensors)
+    labels_stacked = list(labels)
+    
+    return images_stacked, labels_stacked
+
 # Create train and test datasets
 def stream(ow_file, tw_file, window, train_size, test_size):
     # Validate files exist
@@ -64,8 +94,7 @@ def examine(loader):
     total_batches = 0
     total_samples = 0
     label_counts = {"ow": 0, "tw": 0}
-    image_sizes = set()
-    image_modes = set()
+    image_shapes = set()
     
     # Examine a few batches to gather information
     for i, batch in enumerate(loader):
@@ -84,27 +113,16 @@ def examine(loader):
             elif label == "tw":
                 label_counts["tw"] += 1
         
-        # Record image metadata
+        # Record image shapes (now tensors)
         for sample in samples:
-            # Check if it's a PIL Image
-            if isinstance(sample, Image.Image):
-                image_sizes.add(sample.size)
-                image_modes.add(sample.mode)
-            else:
-                # Handle other types (tensors, etc.)
-                if hasattr(sample, 'size'):
-                    image_sizes.add(sample.size)
-                elif hasattr(sample, 'shape'):
-                    image_sizes.add(tuple(sample.shape))
-                # Add type information
-                print(f"Sample type: {type(sample)}")
+            if hasattr(sample, 'shape'):
+                image_shapes.add(tuple(sample.shape))
     
     # Print the gathered metadata
     print(f"Number of batches examined: {total_batches}")
     print(f"Total samples examined: {total_samples}")
     print(f"Label distribution: {label_counts}")
-    print(f"Image sizes: {image_sizes}")
-    print(f"Image modes: {image_modes}")
+    print(f"Image shapes: {image_shapes}")
     
     # Calculate percentages
     if total_samples > 0:
@@ -158,9 +176,9 @@ if __name__ == "__main__":
         args.ow_file, args.tw_file, args.window, args.train_size, args.test_size
     )
 
-    # Create data loaders
-    train_loader = DataLoader(train, batch_size=args.batch_size, num_workers=0)
-    test_loader = DataLoader(test, batch_size=args.batch_size, num_workers=0)
+    # Create data loaders with custom collate function
+    train_loader = DataLoader(train, batch_size=args.batch_size, num_workers=0, collate_fn=pil_collate_fn)
+    test_loader = DataLoader(test, batch_size=args.batch_size, num_workers=0, collate_fn=pil_collate_fn)
 
     examine(train_loader)
     examine(test_loader)
