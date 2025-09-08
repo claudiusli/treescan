@@ -215,8 +215,13 @@ if __name__ == "__main__":
             x = self.fc2(x)
             return x
 
+    # Check if GPU is available
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+    
     # Initialize the network, loss function, and optimizer
     net = SimpleCNN(args.window)
+    net.to(device)  # Move network to GPU
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(net.parameters(), lr=0.001)
     
@@ -228,15 +233,18 @@ if __name__ == "__main__":
             # Get the inputs; data is a list of [inputs, labels]
             inputs, labels = data
             
-            # Convert labels to tensor indices
+            # Move inputs and labels to GPU
+            inputs = inputs.float().to(device)
+            
+            # Convert labels to tensor indices and move to GPU
             label_indices = [0 if label == 'ow' else 1 for label in labels]
-            label_tensor = torch.tensor(label_indices)
+            label_tensor = torch.tensor(label_indices, device=device)
             
             # Zero the parameter gradients
             optimizer.zero_grad()
             
             # Forward + backward + optimize
-            outputs = net(inputs.float())
+            outputs = net(inputs)
             loss = criterion(outputs, label_tensor)
             loss.backward()
             optimizer.step()
@@ -255,11 +263,14 @@ if __name__ == "__main__":
     with torch.no_grad():
         for data in test_loader:
             images, labels = data
-            # Convert labels to tensor indices
-            label_indices = [0 if label == 'ow' else 1 for label in labels]
-            label_tensor = torch.tensor(label_indices)
+            # Move images to GPU
+            images = images.float().to(device)
             
-            outputs = net(images.float())
+            # Convert labels to tensor indices and move to GPU
+            label_indices = [0 if label == 'ow' else 1 for label in labels]
+            label_tensor = torch.tensor(label_indices, device=device)
+            
+            outputs = net(images)
             _, predicted = torch.max(outputs.data, 1)
             total += label_tensor.size(0)
             correct += (predicted == label_tensor).sum().item()
