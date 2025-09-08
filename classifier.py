@@ -78,25 +78,6 @@ def pil_collate_fn(batch):
     return images_stacked, labels_stacked
 
 
-# Define a simple CNN
-class SimpleCNN(nn.Module):
-    def __init__(self):
-        super(SimpleCNN, self).__init__()
-        self.conv1 = nn.Conv2d(3, 32, 3, padding=1)
-        self.pool = nn.MaxPool2d(2, 2)
-        self.conv2 = nn.Conv2d(32, 64, 3, padding=1)
-        self.fc1 = nn.Linear(64 * (window // 4) * (window // 4), 64)
-        self.fc2 = nn.Linear(64, 2)
-        self.relu = nn.ReLU()
-        self.dropout = nn.Dropout(0.5)
-        
-    def forward(self, x):
-        x = self.pool(self.relu(self.conv1(x)))
-        x = self.pool(self.relu(self.conv2(x)))
-        x = x.view(-1, 64 * (window // 4) * (window // 4))
-        x = self.dropout(self.relu(self.fc1(x)))
-        x = self.fc2(x)
-        return x
 
 # Create train and test datasets
 def stream(ow_file, tw_file, window, train_size, test_size):
@@ -213,12 +194,15 @@ if __name__ == "__main__":
 
     # Define the network
     class SimpleCNN(nn.Module):
-        def __init__(self, window):
+        def __init__(self, window_size):
             super(SimpleCNN, self).__init__()
+            self.window_size = window_size
             self.conv1 = nn.Conv2d(3, 32, 3, padding=1)
             self.pool = nn.MaxPool2d(2, 2)
             self.conv2 = nn.Conv2d(32, 64, 3, padding=1)
-            self.fc1 = nn.Linear(64 * (window // 4) * (window // 4), 64)
+            # Calculate the size after convolutions and pooling
+            # Each pooling layer reduces by half, so two poolings: window_size // 4
+            self.fc1 = nn.Linear(64 * (window_size // 4) * (window_size // 4), 64)
             self.fc2 = nn.Linear(64, 2)
             self.relu = nn.ReLU()
             self.dropout = nn.Dropout(0.5)
@@ -226,15 +210,13 @@ if __name__ == "__main__":
         def forward(self, x):
             x = self.pool(self.relu(self.conv1(x)))
             x = self.pool(self.relu(self.conv2(x)))
-            x = x.view(-1, 64 * (args.window // 4) * (args.window // 4))
+            x = x.view(-1, 64 * (self.window_size // 4) * (self.window_size // 4))
             x = self.dropout(self.relu(self.fc1(x)))
             x = self.fc2(x)
             return x
 
-    net = SimpleCNN(args.window)
-
     # Initialize the network, loss function, and optimizer
-    net = SimpleCNN()
+    net = SimpleCNN(args.window)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(net.parameters(), lr=0.001)
     
