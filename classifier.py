@@ -157,6 +157,12 @@ if __name__ == "__main__":
         default=64,
         help="Batch size for DataLoader (default: 64)",
     )
+    parser.add_argument(
+        "--out_model",
+        type=str,
+        default="model.weights",
+        help="Path to save the trained model (default: model.weights)",
+    )
 
     # Parse arguments
     args = parser.parse_args()
@@ -273,9 +279,13 @@ if __name__ == "__main__":
 
     print("Finished Training")
 
-    # Save the model weights
-    torch.save(net.state_dict(), "model.weights")
-    print("Model weights saved to 'model.weights'")
+    # Save the model weights along with the window size
+    save_data = {
+        'model_state_dict': net.state_dict(),
+        'window_size': args.window
+    }
+    torch.save(save_data, args.out_model)
+    print(f"Model weights and window size saved to '{args.out_model}'")
 
     # Testing loop
     correct = 0
