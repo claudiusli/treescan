@@ -75,11 +75,11 @@ def pil_collate_fn(batch, device):
     images_stacked = torch.stack(image_tensors).float()
     # Move to device
     images_stacked = images_stacked.to(device)
-    
+
     # Convert labels to tensor indices and move to device
     label_indices = [0 if label == "ow" else 1 for label in labels]
     labels_stacked = torch.tensor(label_indices, device=device)
-    
+
     return images_stacked, labels_stacked
 
 
@@ -144,7 +144,6 @@ def examine(loader):
     print("Note: Only examined first 5 batches to avoid consuming the entire iterator")
 
 
-# Example usage
 if __name__ == "__main__":
     import argparse
 
@@ -188,19 +187,18 @@ if __name__ == "__main__":
         args.ow_file, args.tw_file, args.window, args.train_size, args.test_size
     )
 
-
     # Create data loaders with custom collate function that moves data to the device
     train_loader = DataLoader(
-        train, 
-        batch_size=args.batch_size, 
-        num_workers=0, 
-        collate_fn=lambda batch: pil_collate_fn(batch, device)
+        train,
+        batch_size=args.batch_size,
+        num_workers=0,
+        collate_fn=lambda batch: pil_collate_fn(batch, device),
     )
     test_loader = DataLoader(
-        test, 
-        batch_size=args.batch_size, 
-        num_workers=0, 
-        collate_fn=lambda batch: pil_collate_fn(batch, device)
+        test,
+        batch_size=args.batch_size,
+        num_workers=0,
+        collate_fn=lambda batch: pil_collate_fn(batch, device),
     )
 
     # Check if GPU is available
@@ -211,51 +209,46 @@ if __name__ == "__main__":
     class StainDiscriminator(nn.Module):
         def __init__(self, window_size):
             super(StainDiscriminator, self).__init__()
-            
+
             # Focus on color channel relationships - use 1x1 convolutions to learn color combinations
             self.color_attention = nn.Sequential(
                 nn.Conv2d(3, 16, 1),  # 1x1 conv to learn color relationships
                 nn.ReLU(),
-                nn.Conv2d(16, 3, 1),   # Project back to 3 channels
-                nn.Sigmoid()           # Attention weights for color channels
+                nn.Conv2d(16, 3, 1),  # Project back to 3 channels
+                nn.Sigmoid(),  # Attention weights for color channels
             )
-            
+
             # Simple feature extraction
             self.feature_extractor = nn.Sequential(
                 nn.Conv2d(3, 32, 3, padding=1),
                 nn.BatchNorm2d(32),
                 nn.ReLU(),
                 nn.MaxPool2d(2, 2),
-                
                 nn.Conv2d(32, 64, 3, padding=1),
                 nn.BatchNorm2d(64),
                 nn.ReLU(),
                 nn.MaxPool2d(2, 2),
-                
                 nn.Conv2d(64, 128, 3, padding=1),
                 nn.BatchNorm2d(128),
-                nn.ReLU()
+                nn.ReLU(),
             )
-            
+
             # Global average pooling for spatial invariance
             self.global_pool = nn.AdaptiveAvgPool2d(1)
-            
+
             # Simple classifier
             self.classifier = nn.Sequential(
-                nn.Linear(128, 32),
-                nn.ReLU(),
-                nn.Dropout(0.3),
-                nn.Linear(32, 2)
+                nn.Linear(128, 32), nn.ReLU(), nn.Dropout(0.3), nn.Linear(32, 2)
             )
 
         def forward(self, x):
             # Apply color attention to emphasize stain differences
             color_weights = self.color_attention(x)
             x = x * color_weights  # Weight color channels
-            
+
             # Extract features
             features = self.feature_extractor(x)
-            
+
             # Global pooling and classification
             pooled = self.global_pool(features)
             flattened = pooled.view(pooled.size(0), -1)
@@ -311,4 +304,4 @@ if __name__ == "__main__":
             correct += (predicted == label_tensor).sum().item()
 
     accuracy = 100 * correct / total
-    print(f"Accuracy on the test set: {accuracy:.2f}%")
+    print(f"Accuracy on the test set: {accuracy:.8f}%")
