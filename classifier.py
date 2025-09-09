@@ -163,6 +163,12 @@ if __name__ == "__main__":
         default="model.weights",
         help="Path to save the trained model (default: model.weights)",
     )
+    parser.add_argument(
+        "--in_model",
+        type=str,
+        default="",
+        help="Path to load pre-trained model weights (optional)",
+    )
 
     # Parse arguments
     args = parser.parse_args()
@@ -246,6 +252,28 @@ if __name__ == "__main__":
     # Initialize the network, loss function, and optimizer
     net = StainDiscriminator(args.window)
     net.to(device)  # Move network to GPU
+    
+    # Load pre-trained weights if specified
+    if args.in_model:
+        if not os.path.exists(args.in_model):
+            raise FileNotFoundError(f"Model file not found: {args.in_model}")
+        
+        # Load the saved data
+        save_data = torch.load(args.in_model, map_location=device)
+        
+        # Check if window size matches
+        if 'window_size' in save_data:
+            if save_data['window_size'] != args.window:
+                print(f"Error: Window size mismatch! Model was trained with window size {save_data['window_size']}, "
+                      f"but current window size is {args.window}")
+                exit(1)
+        else:
+            print("Warning: No window size information found in the model file. Proceeding anyway.")
+        
+        # Load the model state dict
+        net.load_state_dict(save_data['model_state_dict'])
+        print(f"Loaded pre-trained weights from '{args.in_model}'")
+    
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(net.parameters(), lr=0.001)
 
