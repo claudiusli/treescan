@@ -46,10 +46,10 @@ class StreamDS(IterableDataset):
                 yield patch, label
 
 
-def pil_collate_fn(batch):
+def pil_collate_fn(batch, device):
     """
     Custom collate function to handle PIL Images in batches.
-    Converts PIL Images to tensors and stacks them.
+    Converts PIL Images to tensors and stacks them, then moves to the specified device.
     """
     images, labels = zip(*batch)
 
@@ -71,10 +71,15 @@ def pil_collate_fn(batch):
             # If it's already a tensor, just use it
             image_tensors.append(img)
 
-    # Stack images and labels
-    images_stacked = torch.stack(image_tensors)
-    labels_stacked = list(labels)
-
+    # Stack images and convert to float
+    images_stacked = torch.stack(image_tensors).float()
+    # Move to device
+    images_stacked = images_stacked.to(device)
+    
+    # Convert labels to tensor indices and move to device
+    label_indices = [0 if label == "ow" else 1 for label in labels]
+    labels_stacked = torch.tensor(label_indices, device=device)
+    
     return images_stacked, labels_stacked
 
 
@@ -183,12 +188,19 @@ if __name__ == "__main__":
         args.ow_file, args.tw_file, args.window, args.train_size, args.test_size
     )
 
-    # Create data loaders with custom collate function
+
+    # Create data loaders with custom collate function that moves data to the device
     train_loader = DataLoader(
-        train, batch_size=args.batch_size, num_workers=0, collate_fn=pil_collate_fn
+        train, 
+        batch_size=args.batch_size, 
+        num_workers=0, 
+        collate_fn=lambda batch: pil_collate_fn(batch, device)
     )
     test_loader = DataLoader(
-        test, batch_size=args.batch_size, num_workers=0, collate_fn=pil_collate_fn
+        test, 
+        batch_size=args.batch_size, 
+        num_workers=0, 
+        collate_fn=lambda batch: pil_collate_fn(batch, device)
     )
 
     # Define the network
@@ -232,12 +244,8 @@ if __name__ == "__main__":
             # Get the inputs; data is a list of [inputs, labels]
             inputs, labels = data
 
-            # Move inputs and labels to GPU
-            inputs = inputs.float().to(device)
-
-            # Convert labels to tensor indices and move to GPU
-            label_indices = [0 if label == "ow" else 1 for label in labels]
-            label_tensor = torch.tensor(label_indices, device=device)
+            # Data is already on the GPU from the collate function
+            inputs, label_tensor = data
 
             # Zero the parameter gradients
             optimizer.zero_grad()
@@ -263,13 +271,8 @@ if __name__ == "__main__":
     total = 0
     with torch.no_grad():
         for data in test_loader:
-            images, labels = data
-            # Move images to GPU
-            images = images.float().to(device)
-
-            # Convert labels to tensor indices and move to GPU
-            label_indices = [0 if label == "ow" else 1 for label in labels]
-            label_tensor = torch.tensor(label_indices, device=device)
+            images, label_tensor = data
+            # Data is already on the GPU from the collate function
 
             outputs = net(images)
             _, predicted = torch.max(outputs.data, 1)
