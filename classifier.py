@@ -47,8 +47,8 @@ class StreamDS(IterableDataset):
             y = random.randint(0, height - self.window)
 
             # Extract patch directly from GPU tensor
-            patch = img_tensor[:, y:y+self.window, x:x+self.window]
-            
+            patch = img_tensor[:, y : y + self.window, x : x + self.window]
+
             yield patch, label
 
 
@@ -267,14 +267,14 @@ if __name__ == "__main__":
             running_loss += loss.item()
             if i % 100 == 99:  # Print every 100 mini-batches
                 print(
-                    f"Epoch {epoch + 1}, Batch {i + 1}, Loss: {running_loss / 100:.3f}"
+                    f"Epoch {epoch + 1}, Batch {i + 1}, Loss: {running_loss / 100:.8f}"
                 )
                 running_loss = 0.0
 
     print("Finished Training")
 
     # Save the model weights
-    torch.save(net.state_dict(), 'model.weights')
+    torch.save(net.state_dict(), "model.weights")
     print("Model weights saved to 'model.weights'")
 
     # Testing loop
