@@ -290,6 +290,10 @@ if __name__ == "__main__":
 
     print("Finished Training")
 
+    # Save the model weights
+    torch.save(net.state_dict(), 'model.weights')
+    print("Model weights saved to 'model.weights'")
+
     # Testing loop
     correct = 0
     total = 0
