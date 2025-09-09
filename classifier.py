@@ -231,7 +231,7 @@ if __name__ == "__main__":
     print(f"Using device: {device}")
 
     # Initialize the network, loss function, and optimizer
-    net = SimpleCNN(args.window)
+    net = StainDiscriminator(args.window)
     net.to(device)  # Move network to GPU
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(net.parameters(), lr=0.001)
