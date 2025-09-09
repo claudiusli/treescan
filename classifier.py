@@ -203,32 +203,63 @@ if __name__ == "__main__":
         collate_fn=lambda batch: pil_collate_fn(batch, device)
     )
 
-    # Define the network
-    class SimpleCNN(nn.Module):
-        def __init__(self, window_size):
-            super(SimpleCNN, self).__init__()
-            self.window_size = window_size
-            self.conv1 = nn.Conv2d(3, 32, 3, padding=1)
-            self.pool = nn.MaxPool2d(2, 2)
-            self.conv2 = nn.Conv2d(32, 64, 3, padding=1)
-            # Calculate the size after convolutions and pooling
-            # Each pooling layer reduces by half, so two poolings: window_size // 4
-            self.fc1 = nn.Linear(64 * (window_size // 4) * (window_size // 4), 64)
-            self.fc2 = nn.Linear(64, 2)
-            self.relu = nn.ReLU()
-            self.dropout = nn.Dropout(0.5)
-
-        def forward(self, x):
-            x = self.pool(self.relu(self.conv1(x)))
-            x = self.pool(self.relu(self.conv2(x)))
-            x = x.view(-1, 64 * (self.window_size // 4) * (self.window_size // 4))
-            x = self.dropout(self.relu(self.fc1(x)))
-            x = self.fc2(x)
-            return x
-
     # Check if GPU is available
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
+
+    # Define a network optimized for color-based stain discrimination
+    class StainDiscriminator(nn.Module):
+        def __init__(self, window_size):
+            super(StainDiscriminator, self).__init__()
+            
+            # Focus on color channel relationships - use 1x1 convolutions to learn color combinations
+            self.color_attention = nn.Sequential(
+                nn.Conv2d(3, 16, 1),  # 1x1 conv to learn color relationships
+                nn.ReLU(),
+                nn.Conv2d(16, 3, 1),   # Project back to 3 channels
+                nn.Sigmoid()           # Attention weights for color channels
+            )
+            
+            # Simple feature extraction
+            self.feature_extractor = nn.Sequential(
+                nn.Conv2d(3, 32, 3, padding=1),
+                nn.BatchNorm2d(32),
+                nn.ReLU(),
+                nn.MaxPool2d(2, 2),
+                
+                nn.Conv2d(32, 64, 3, padding=1),
+                nn.BatchNorm2d(64),
+                nn.ReLU(),
+                nn.MaxPool2d(2, 2),
+                
+                nn.Conv2d(64, 128, 3, padding=1),
+                nn.BatchNorm2d(128),
+                nn.ReLU()
+            )
+            
+            # Global average pooling for spatial invariance
+            self.global_pool = nn.AdaptiveAvgPool2d(1)
+            
+            # Simple classifier
+            self.classifier = nn.Sequential(
+                nn.Linear(128, 32),
+                nn.ReLU(),
+                nn.Dropout(0.3),
+                nn.Linear(32, 2)
+            )
+
+        def forward(self, x):
+            # Apply color attention to emphasize stain differences
+            color_weights = self.color_attention(x)
+            x = x * color_weights  # Weight color channels
+            
+            # Extract features
+            features = self.feature_extractor(x)
+            
+            # Global pooling and classification
+            pooled = self.global_pool(features)
+            flattened = pooled.view(pooled.size(0), -1)
+            return self.classifier(flattened)
 
     # Initialize the network, loss function, and optimizer
     net = StainDiscriminator(args.window)
