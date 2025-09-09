@@ -78,7 +78,6 @@ def pil_collate_fn(batch):
     return images_stacked, labels_stacked
 
 
-
 # Create train and test datasets
 def stream(ow_file, tw_file, window, train_size, test_size):
     # Validate files exist
@@ -206,7 +205,7 @@ if __name__ == "__main__":
             self.fc2 = nn.Linear(64, 2)
             self.relu = nn.ReLU()
             self.dropout = nn.Dropout(0.5)
-            
+
         def forward(self, x):
             x = self.pool(self.relu(self.conv1(x)))
             x = self.pool(self.relu(self.conv2(x)))
@@ -218,13 +217,13 @@ if __name__ == "__main__":
     # Check if GPU is available
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    
+
     # Initialize the network, loss function, and optimizer
     net = SimpleCNN(args.window)
     net.to(device)  # Move network to GPU
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(net.parameters(), lr=0.001)
-    
+
     # Training loop
     num_epochs = 10
     for epoch in range(num_epochs):
@@ -232,31 +231,33 @@ if __name__ == "__main__":
         for i, data in enumerate(train_loader, 0):
             # Get the inputs; data is a list of [inputs, labels]
             inputs, labels = data
-            
+
             # Move inputs and labels to GPU
             inputs = inputs.float().to(device)
-            
+
             # Convert labels to tensor indices and move to GPU
-            label_indices = [0 if label == 'ow' else 1 for label in labels]
+            label_indices = [0 if label == "ow" else 1 for label in labels]
             label_tensor = torch.tensor(label_indices, device=device)
-            
+
             # Zero the parameter gradients
             optimizer.zero_grad()
-            
+
             # Forward + backward + optimize
             outputs = net(inputs)
             loss = criterion(outputs, label_tensor)
             loss.backward()
             optimizer.step()
-            
+
             # Print statistics
             running_loss += loss.item()
-            if i % 100 == 99:    # Print every 100 mini-batches
-                print(f'Epoch {epoch + 1}, Batch {i + 1}, Loss: {running_loss / 100:.3f}')
+            if i % 100 == 99:  # Print every 100 mini-batches
+                print(
+                    f"Epoch {epoch + 1}, Batch {i + 1}, Loss: {running_loss / 100:.3f}"
+                )
                 running_loss = 0.0
-    
-    print('Finished Training')
-    
+
+    print("Finished Training")
+
     # Testing loop
     correct = 0
     total = 0
@@ -265,15 +266,15 @@ if __name__ == "__main__":
             images, labels = data
             # Move images to GPU
             images = images.float().to(device)
-            
+
             # Convert labels to tensor indices and move to GPU
-            label_indices = [0 if label == 'ow' else 1 for label in labels]
+            label_indices = [0 if label == "ow" else 1 for label in labels]
             label_tensor = torch.tensor(label_indices, device=device)
-            
+
             outputs = net(images)
             _, predicted = torch.max(outputs.data, 1)
             total += label_tensor.size(0)
             correct += (predicted == label_tensor).sum().item()
-    
+
     accuracy = 100 * correct / total
-    print(f'Accuracy on the test set: {accuracy:.2f}%')
+    print(f"Accuracy on the test set: {accuracy:.2f}%")
