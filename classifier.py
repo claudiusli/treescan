@@ -142,8 +142,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--train_size",
         type=int,
-        required=True,
-        help="Number of samples in the training dataset",
+        default=0,
+        help="Number of samples in the training dataset (default: 0)",
     )
     parser.add_argument(
         "--test_size",
@@ -277,43 +277,50 @@ if __name__ == "__main__":
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(net.parameters(), lr=0.001)
 
-    # Training loop
-    num_epochs = 10
-    for epoch in range(num_epochs):
-        running_loss = 0.0
-        for i, data in enumerate(train_loader, 0):
-            # Get the inputs; data is a list of [inputs, labels]
-            inputs, labels = data
+    # Only train if train_size > 0
+    if args.train_size > 0:
+        # Training loop
+        num_epochs = 10
+        for epoch in range(num_epochs):
+            running_loss = 0.0
+            for i, data in enumerate(train_loader, 0):
+                # Get the inputs; data is a list of [inputs, labels]
+                inputs, labels = data
 
-            # Data is already on the GPU from the collate function
-            inputs, label_tensor = data
+                # Data is already on the GPU from the collate function
+                inputs, label_tensor = data
 
-            # Zero the parameter gradients
-            optimizer.zero_grad()
+                # Zero the parameter gradients
+                optimizer.zero_grad()
 
-            # Forward + backward + optimize
-            outputs = net(inputs)
-            loss = criterion(outputs, label_tensor)
-            loss.backward()
-            optimizer.step()
+                # Forward + backward + optimize
+                outputs = net(inputs)
+                loss = criterion(outputs, label_tensor)
+                loss.backward()
+                optimizer.step()
 
-            # Print statistics
-            running_loss += loss.item()
-            if i % 100 == 99:  # Print every 100 mini-batches
-                print(
-                    f"Epoch {epoch + 1}, Batch {i + 1}, Loss: {running_loss / 100:.8f}"
-                )
-                running_loss = 0.0
+                # Print statistics
+                running_loss += loss.item()
+                if i % 100 == 99:  # Print every 100 mini-batches
+                    print(
+                        f"Epoch {epoch + 1}, Batch {i + 1}, Loss: {running_loss / 100:.8f}"
+                    )
+                    running_loss = 0.0
 
-    print("Finished Training")
+        print("Finished Training")
+    else:
+        print("Skipping training (train_size is 0)")
 
     # Save the model weights along with the window size
-    save_data = {
-        'model_state_dict': net.state_dict(),
-        'window_size': args.window
-    }
-    torch.save(save_data, args.out_model)
-    print(f"Model weights and window size saved to '{args.out_model}'")
+    if args.train_size > 0:
+        save_data = {
+            'model_state_dict': net.state_dict(),
+            'window_size': args.window
+        }
+        torch.save(save_data, args.out_model)
+        print(f"Model weights and window size saved to '{args.out_model}'")
+    else:
+        print("Skipping model saving (train_size is 0)")
 
     # Testing loop
     correct = 0
