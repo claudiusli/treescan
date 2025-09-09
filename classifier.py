@@ -5,95 +5,74 @@ import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import numpy as np
 
 
 class StreamDS(IterableDataset):
-    def __init__(self, ow_file, tw_file, window, size):
+    def __init__(self, ow_file, tw_file, window, size, device):
         self.ow_file = ow_file
         self.tw_file = tw_file
         self.window = window
         self.size = size
+        self.device = device
+        # Pre-load the images to GPU memory
+        self.ow_img = self._load_image_to_gpu(ow_file, device)
+        self.tw_img = self._load_image_to_gpu(tw_file, device)
+
+    def _load_image_to_gpu(self, path, device):
+        with Image.open(path) as img:
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            # Convert to tensor and move to GPU
+            tensor = torch.tensor(np.array(img)).permute(2, 0, 1).float()
+            return tensor.to(device)
 
     def __iter__(self):
         for _ in range(self.size):
-            # Randomly choose which file to use
+            # Randomly choose which image tensor to use
             if random.choice([True, False]):
-                file_path = self.ow_file
+                img_tensor = self.ow_img
                 label = "ow"
             else:
-                file_path = self.tw_file
+                img_tensor = self.tw_img
                 label = "tw"
 
-            # Open the image
-            with Image.open(file_path) as img:
-                width, height = img.size
+            # Get random coordinates
+            _, height, width = img_tensor.shape
+            if width < self.window or height < self.window:
+                raise ValueError(
+                    f"Image dimensions {width}x{height} are smaller than window size {self.window}"
+                )
+            x = random.randint(0, width - self.window)
+            y = random.randint(0, height - self.window)
 
-                # Ensure the window is valid
-                if width < self.window or height < self.window:
-                    raise ValueError(
-                        f"Image dimensions {width}x{height} are smaller than window size {self.window}"
-                    )
-
-                # Generate random coordinates
-                x = random.randint(0, width - self.window)
-                y = random.randint(0, height - self.window)
-
-                # Extract the patch
-                patch = img.crop((x, y, x + self.window, y + self.window))
-
-                # Convert to tensor or appropriate format
-                # For now, we'll yield the PIL Image and label, but you might want to convert to tensor
-                yield patch, label
+            # Extract patch directly from GPU tensor
+            patch = img_tensor[:, y:y+self.window, x:x+self.window]
+            
+            yield patch, label
 
 
-def pil_collate_fn(batch, device):
-    """
-    Custom collate function to handle PIL Images in batches.
-    Converts PIL Images to tensors and stacks them, then moves to the specified device.
-    """
-    images, labels = zip(*batch)
-
-    # Convert PIL Images to tensors
-    image_tensors = []
-    for img in images:
-        # Convert PIL Image to tensor
-        if isinstance(img, Image.Image):
-            # Convert to RGB if needed
-            if img.mode != "RGB":
-                img = img.convert("RGB")
-            # Convert to tensor
-            img_tensor = torch.tensor(list(img.getdata())).view(
-                img.size[1], img.size[0], 3
-            )
-            img_tensor = img_tensor.permute(2, 0, 1)  # Change to (C, H, W)
-            image_tensors.append(img_tensor)
-        else:
-            # If it's already a tensor, just use it
-            image_tensors.append(img)
-
-    # Stack images and convert to float
-    images_stacked = torch.stack(image_tensors).float()
-    # Move to device
-    images_stacked = images_stacked.to(device)
-
-    # Convert labels to tensor indices and move to device
+def gpu_collate_fn(batch, device):
+    patches, labels = zip(*batch)
+    # Stack patches (already tensors on GPU)
+    patches_stacked = torch.stack(patches)
+    # Convert labels to tensor
     label_indices = [0 if label == "ow" else 1 for label in labels]
     labels_stacked = torch.tensor(label_indices, device=device)
-
-    return images_stacked, labels_stacked
+    return patches_stacked, labels_stacked
 
 
 # Create train and test datasets
-def stream(ow_file, tw_file, window, train_size, test_size):
+def stream(ow_file, tw_file, window, train_size, test_size, device):
     # Validate files exist
     if not os.path.exists(ow_file):
         raise FileNotFoundError(f"OW file not found: {ow_file}")
     if not os.path.exists(tw_file):
         raise FileNotFoundError(f"TW file not found: {tw_file}")
 
-    # Create datasets
-    train_ds = StreamDS(ow_file, tw_file, window, train_size)
-    test_ds = StreamDS(ow_file, tw_file, window, test_size)
+    # Create datasets with device
+    train_ds = StreamDS(ow_file, tw_file, window, train_size, device)
+    test_ds = StreamDS(ow_file, tw_file, window, test_size, device)
 
     return train_ds, test_ds
 
@@ -182,23 +161,27 @@ if __name__ == "__main__":
     # Parse arguments
     args = parser.parse_args()
 
+    # Check if GPU is available
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
     # Create datasets using provided arguments
     train, test = stream(
-        args.ow_file, args.tw_file, args.window, args.train_size, args.test_size
+        args.ow_file, args.tw_file, args.window, args.train_size, args.test_size, device
     )
 
-    # Create data loaders with custom collate function that moves data to the device
+    # Create data loaders with custom collate function
     train_loader = DataLoader(
         train,
         batch_size=args.batch_size,
         num_workers=0,
-        collate_fn=lambda batch: pil_collate_fn(batch, device),
+        collate_fn=lambda batch: gpu_collate_fn(batch, device),
     )
     test_loader = DataLoader(
         test,
         batch_size=args.batch_size,
         num_workers=0,
-        collate_fn=lambda batch: pil_collate_fn(batch, device),
+        collate_fn=lambda batch: gpu_collate_fn(batch, device),
     )
 
     # Check if GPU is available
