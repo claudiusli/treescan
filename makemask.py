@@ -55,14 +55,14 @@ class StainDiscriminator(nn.Module):
         return self.classifier(flattened)
 
 def main():
-    parser = argparse.ArgumentParser(description='Create a mask from a TIFF image using a trained classifier')
-    parser.add_argument('tiff_file', type=str, help='Path to the TIFF image file')
+    parser = argparse.ArgumentParser(description='Create a mask from a JPEG image using a trained classifier')
+    parser.add_argument('jpeg_file', type=str, help='Path to the JPEG image file')
     parser.add_argument('model_file', type=str, help='Path to the trained model weights file')
     args = parser.parse_args()
     
     # Check if files exist
-    if not os.path.exists(args.tiff_file):
-        raise FileNotFoundError(f"TIFF file not found: {args.tiff_file}")
+    if not os.path.exists(args.jpeg_file):
+        raise FileNotFoundError(f"JPEG file not found: {args.jpeg_file}")
     if not os.path.exists(args.model_file):
         raise FileNotFoundError(f"Model file not found: {args.model_file}")
     
@@ -81,8 +81,8 @@ def main():
     net.to(device)
     net.eval()  # Set to evaluation mode
     
-    # Load and process the TIFF image
-    with Image.open(args.tiff_file) as img:
+    # Load and process the JPEG image
+    with Image.open(args.jpeg_file) as img:
         if img.mode != "RGB":
             img = img.convert("RGB")
         img_array = np.array(img)
@@ -121,7 +121,7 @@ def main():
     # Save the mask
     mask_img = Image.fromarray(mask, 'RGBA')
     # Generate output filename
-    base_name = os.path.splitext(args.tiff_file)[0]
+    base_name = os.path.splitext(args.jpeg_file)[0]
     output_filename = f"{base_name}_mask.png"
     mask_img.save(output_filename)
     print(f"Mask saved to: {output_filename}")
