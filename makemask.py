@@ -81,6 +81,9 @@ def main():
     net.to(device)
     net.eval()  # Set to evaluation mode
     
+    # Increase the maximum image size to handle large images
+    Image.MAX_IMAGE_PIXELS = None
+    
     # Load and process the JPEG image
     with Image.open(args.jpeg_file) as img:
         if img.mode != "RGB":
