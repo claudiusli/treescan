@@ -56,6 +56,53 @@ class StainDiscriminator(nn.Module):
         return self.classifier(flattened)
 
 
+def calculate_max_batch_size(window_size, device, net):
+    """Calculate maximum batch size that fits in VRAM"""
+    if device.type == 'cpu':
+        return 1024  # Use a reasonable batch size for CPU
+    
+    # Estimate memory per patch (bytes)
+    # 3 channels, float32 (4 bytes), plus some overhead
+    patch_memory = window_size * window_size * 3 * 4 * 2  # Add safety factor
+    
+    # Get available VRAM (leave 20% buffer for model and overhead)
+    total_memory = torch.cuda.get_device_properties(device).total_memory
+    allocated_memory = torch.cuda.memory_allocated(device)
+    free_memory = total_memory - allocated_memory
+    usable_memory = free_memory * 0.8  # 20% buffer
+    
+    max_batch_size = int(usable_memory // patch_memory)
+    
+    # Apply reasonable limits
+    max_batch_size = min(max_batch_size, 4096)  # Upper limit
+    max_batch_size = max(max_batch_size, 1)     # Lower limit
+    
+    print(f"Max batch size: {max_batch_size} patches")
+    return max_batch_size
+
+def smart_batched_sliding_window(tensor, window_size, device, net):
+    num_y = tensor.size(1) - window_size + 1
+    num_x = tensor.size(2) - window_size + 1
+    
+    batch_size = calculate_max_batch_size(window_size, device, net)
+    batch = []
+    positions = []
+    
+    for y in range(num_y):
+        for x in range(num_x):
+            patch = tensor[:, y:y+window_size, x:x+window_size].unsqueeze(0)
+            batch.append(patch)
+            positions.append((y, x))
+            
+            # Flush batch when full, regardless of row boundaries
+            if len(batch) == batch_size:
+                yield torch.cat(batch, dim=0), positions
+                batch = []
+                positions = []
+    
+    if batch:  # Final partial batch
+        yield torch.cat(batch, dim=0), positions
+
 def main():
     parser = argparse.ArgumentParser(
         description="Create a mask from a JPEG image using a trained classifier"
@@ -90,54 +137,37 @@ def main():
     # Increase the maximum image size to handle large images
     Image.MAX_IMAGE_PIXELS = None
 
-    # Load image directly to GPU
+    # Load image
     with Image.open(args.jpeg_file) as img:
         if img.mode != "RGB":
             img = img.convert("RGB")
-        # Convert to tensor and move to GPU immediately
+        # Convert to tensor
         img_array = np.array(img)
         img_tensor = torch.tensor(img_array, dtype=torch.float32).permute(2, 0, 1).to(device)
     
     # Get dimensions
     _, height, width = img_tensor.shape
-    
-    # Use unfold to extract all windows at once on GPU
-    # This creates a view of the image as overlapping windows
-    patches = img_tensor.unfold(1, window_size, 1).unfold(2, window_size, 1)
-    # patches shape: [3, num_y, num_x, window_size, window_size]
-    patches = patches.contiguous().view(3, -1, window_size, window_size)
-    patches = patches.permute(1, 0, 2, 3)  # [num_patches, 3, window_size, window_size]
-    
-    num_patches = patches.size(0)
-    print(f"Total patches to process: {num_patches}")
+    print(f"Image dimensions: {width}x{height}")
     
     # Create mask tensor on GPU
     mask_tensor = torch.zeros(height, width, 4, device=device, dtype=torch.uint8)
     
-    # Process in batches to avoid memory issues
-    batch_size = 1024  # Adjust based on available GPU memory
+    # Process using smart batching
+    total_patches = (height - window_size + 1) * (width - window_size + 1)
+    print(f"Total patches to process: {total_patches}")
+    
+    batch_num = 0
     with torch.no_grad():
-        for i in range(0, num_patches, batch_size):
-            batch_end = min(i + batch_size, num_patches)
-            current_batch_size = batch_end - i
-            print(f"Processing batch {i//batch_size + 1}/{(num_patches + batch_size - 1)//batch_size}")
+        for batch, positions in smart_batched_sliding_window(img_tensor, window_size, device, net):
+            batch_num += 1
+            print(f"Processing batch {batch_num} ({len(batch)} patches)")
             
-            batch = patches[i:batch_end]
             outputs = net(batch)
             predictions = torch.argmax(outputs, dim=1)
             
-            # Calculate window positions for this batch
-            # The patches are ordered row-wise
-            num_x = width - window_size + 1
-            batch_indices = torch.arange(i, batch_end, device=device)
-            ys = batch_indices // num_x
-            xs = batch_indices % num_x
-            
             # Update mask on GPU
-            for j in range(current_batch_size):
-                y = ys[j].item()
-                x = xs[j].item()
-                pred = predictions[j].item()
+            for i, (y, x) in enumerate(positions):
+                pred = predictions[i].item()
                 
                 if pred == 0:  # OW
                     mask_tensor[y:y+window_size, x:x+window_size, 2] = 255  # Blue
