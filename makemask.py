@@ -90,52 +90,64 @@ def main():
     # Increase the maximum image size to handle large images
     Image.MAX_IMAGE_PIXELS = None
 
-    # Load and process the JPEG image
+    # Load image directly to GPU
     with Image.open(args.jpeg_file) as img:
         if img.mode != "RGB":
             img = img.convert("RGB")
+        # Convert to tensor and move to GPU immediately
         img_array = np.array(img)
-        height, width, _ = img_array.shape
-
-    # Create an output image for the mask (RGBA to support transparency)
-    # We'll make OW regions blue and TW regions red
-    mask = np.zeros((height, width, 4), dtype=np.uint8)
-
-    total_frames = (height - window_size + 1) * (width - window_size + 1)
-    current_frame = 0
-    # Process each window
+        img_tensor = torch.tensor(img_array, dtype=torch.float32).permute(2, 0, 1).to(device)
+    
+    # Get dimensions
+    _, height, width = img_tensor.shape
+    
+    # Use unfold to extract all windows at once on GPU
+    # This creates a view of the image as overlapping windows
+    patches = img_tensor.unfold(1, window_size, 1).unfold(2, window_size, 1)
+    # patches shape: [3, num_y, num_x, window_size, window_size]
+    patches = patches.contiguous().view(3, -1, window_size, window_size)
+    patches = patches.permute(1, 0, 2, 3)  # [num_patches, 3, window_size, window_size]
+    
+    num_patches = patches.size(0)
+    print(f"Total patches to process: {num_patches}")
+    
+    # Create mask tensor on GPU
+    mask_tensor = torch.zeros(height, width, 4, device=device, dtype=torch.uint8)
+    
+    # Process in batches to avoid memory issues
+    batch_size = 1024  # Adjust based on available GPU memory
     with torch.no_grad():
-        for y in range(0, height - window_size + 1):
-            for x in range(0, width - window_size + 1):
-                print(f"Processing {current_frame}/{total_frames}\n")
-                current_frame += 1
-                # Extract the patch
-                patch = img_array[y : y + window_size, x : x + window_size, :]
-                # Convert to tensor and preprocess
-                patch_tensor = torch.tensor(patch).permute(2, 0, 1).float().unsqueeze(0)
-                patch_tensor = patch_tensor.to(device)
-
-                # Classify
-                outputs = net(patch_tensor)
-                _, predicted = torch.max(outputs, 1)
-                classification = predicted.item()
-
-                # Color the region in the mask
-                # OW (class 0) -> Blue, TW (class 1) -> Red
-                if classification == 0:  # OW
-                    # Set blue channel and alpha
-                    mask[y : y + window_size, x : x + window_size, 2] = 255  # Blue
-                    mask[y : y + window_size, x : x + window_size, 3] = (
-                        128  # Alpha (semi-transparent)
-                    )
+        for i in range(0, num_patches, batch_size):
+            batch_end = min(i + batch_size, num_patches)
+            current_batch_size = batch_end - i
+            print(f"Processing batch {i//batch_size + 1}/{(num_patches + batch_size - 1)//batch_size}")
+            
+            batch = patches[i:batch_end]
+            outputs = net(batch)
+            predictions = torch.argmax(outputs, dim=1)
+            
+            # Calculate window positions for this batch
+            # The patches are ordered row-wise
+            num_x = width - window_size + 1
+            batch_indices = torch.arange(i, batch_end, device=device)
+            ys = batch_indices // num_x
+            xs = batch_indices % num_x
+            
+            # Update mask on GPU
+            for j in range(current_batch_size):
+                y = ys[j].item()
+                x = xs[j].item()
+                pred = predictions[j].item()
+                
+                if pred == 0:  # OW
+                    mask_tensor[y:y+window_size, x:x+window_size, 2] = 255  # Blue
+                    mask_tensor[y:y+window_size, x:x+window_size, 3] = 128  # Alpha
                 else:  # TW
-                    # Set red channel and alpha
-                    mask[y : y + window_size, x : x + window_size, 0] = 255  # Red
-                    mask[y : y + window_size, x : x + window_size, 3] = (
-                        128  # Alpha (semi-transparent)
-                    )
+                    mask_tensor[y:y+window_size, x:x+window_size, 0] = 255  # Red
+                    mask_tensor[y:y+window_size, x:x+window_size, 3] = 128  # Alpha
 
-    # Save the mask
+    # Move mask to CPU and save
+    mask = mask_tensor.cpu().numpy()
     mask_img = Image.fromarray(mask, "RGBA")
     # Generate output filename
     base_name = os.path.splitext(args.jpeg_file)[0]
