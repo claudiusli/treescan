@@ -173,10 +173,12 @@ def main():
     print(f"Total patches to process: {total_patches}")
     
     batch_num = 0
+    processed_patches = 0
     with torch.no_grad():
         for batch, positions in smart_batched_sliding_window(img_tensor, window_size, device, net):
             batch_num += 1
-            print(f"Processing batch {batch_num} ({len(batch)} patches)")
+            processed_patches += len(batch)
+            print(f"Processing batch {batch_num} ({len(batch)} patches, {processed_patches}/{total_patches} total)")
             
             outputs = net(batch)
             predictions = torch.argmax(outputs, dim=1)
