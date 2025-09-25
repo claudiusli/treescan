@@ -4,43 +4,122 @@ import sys
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+import torch.nn as nn
 
-def load_model_window(model_path):
-    """Load the model file and extract the window size"""
+def load_model_window_and_network(model_path, device):
+    """Load the model file and extract the window size and network"""
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model file not found: {model_path}")
     
     # Load the saved data
-    save_data = torch.load(model_path, map_location='cpu')
+    save_data = torch.load(model_path, map_location=device)
     
     if 'window_size' not in save_data:
         raise ValueError("Model file does not contain window_size information")
     
-    return save_data['window_size']
+    window_size = save_data['window_size']
+    
+    # Define the network architecture (must match classifier.py)
+    class StainDiscriminator(nn.Module):
+        def __init__(self, window_size):
+            super(StainDiscriminator, self).__init__()
 
-def load_image(image_path):
-    """Load the image and return as a PIL Image"""
-    return Image.open(image_path)
+            # Focus on color channel relationships - use 1x1 convolutions to learn color combinations
+            self.color_attention = nn.Sequential(
+                nn.Conv2d(3, 16, 1),  # 1x1 conv to learn color relationships
+                nn.ReLU(),
+                nn.Conv2d(16, 3, 1),  # Project back to 3 channels
+                nn.Sigmoid(),  # Attention weights for color channels
+            )
+
+            # Simple feature extraction
+            self.feature_extractor = nn.Sequential(
+                nn.Conv2d(3, 32, 3, padding=1),
+                nn.BatchNorm2d(32),
+                nn.ReLU(),
+                nn.MaxPool2d(2, 2),
+                nn.Conv2d(32, 64, 3, padding=1),
+                nn.BatchNorm2d(64),
+                nn.ReLU(),
+                nn.MaxPool2d(2, 2),
+                nn.Conv2d(64, 128, 3, padding=1),
+                nn.BatchNorm2d(128),
+                nn.ReLU(),
+            )
+
+            # Global average pooling for spatial invariance
+            self.global_pool = nn.AdaptiveAvgPool2d(1)
+
+            # Simple classifier
+            self.classifier = nn.Sequential(
+                nn.Linear(128, 32), nn.ReLU(), nn.Dropout(0.3), nn.Linear(32, 2)
+            )
+
+        def forward(self, x):
+            # Apply color attention to emphasize stain differences
+            color_weights = self.color_attention(x)
+            x = x * color_weights  # Weight color channels
+
+            # Extract features
+            features = self.feature_extractor(x)
+
+            # Global pooling and classification
+            pooled = self.global_pool(features)
+            flattened = pooled.view(pooled.size(0), -1)
+            return self.classifier(flattened)
+    
+    # Initialize the network
+    net = StainDiscriminator(window_size)
+    net.load_state_dict(save_data['model_state_dict'])
+    net.to(device)
+    net.eval()  # Set to evaluation mode
+    
+    return window_size, net
+
+def load_image_to_tensor(image_path, device):
+    """Load the image and convert to tensor on the specified device, matching classifier.py"""
+    with Image.open(image_path) as img:
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        # Convert to tensor and move to device, matching classifier.py
+        tensor = torch.tensor(np.array(img)).permute(2, 0, 1).float()
+        return tensor.to(device)
 
 class PatchViewer:
     def __init__(self):
         self.fig = None
         self.ax = None
         
-    def show_patch(self, image, x, y, window_size):
-        """Extract and display the window x window patch at (x, y) in a matplotlib window"""
-        # Ensure the image is in RGB mode
-        if image.mode != 'RGB':
-            image = image.convert('RGB')
+    def show_patch(self, image_tensor, x, y, window_size, net, device):
+        """Extract and display the window x window patch at (x, y) in a matplotlib window, and predict OW/TW"""
+        # Get image dimensions from the tensor (C, H, W)
+        _, height, width = image_tensor.shape
         
-        # Get image dimensions
-        width, height = image.size
+        # Extract patch directly from the tensor, matching classifier.py
+        # The tensor is on the specified device
+        patch_tensor = image_tensor[:, y:y + window_size, x:x + window_size]
         
-        # Extract the patch
-        patch = image.crop((x, y, x + window_size, y + window_size))
+        # Add batch dimension for the network
+        patch_batch = patch_tensor.unsqueeze(0)
         
-        # Convert to numpy array for matplotlib
-        patch_array = np.array(patch)
+        # Get prediction from the network
+        with torch.no_grad():
+            outputs = net(patch_batch)
+            # Apply softmax to get probabilities
+            probabilities = torch.nn.functional.softmax(outputs, dim=1)
+            # Get the predicted class (0: OW, 1: TW)
+            _, predicted = torch.max(outputs, 1)
+            
+            # Convert to percentages
+            ow_prob = probabilities[0][0].item() * 100
+            tw_prob = probabilities[0][1].item() * 100
+            label = 'OW' if predicted.item() == 0 else 'TW'
+        
+        # Convert the patch tensor to numpy for display
+        # The tensor is on CPU or GPU, so move to CPU and convert
+        patch_np = patch_tensor.cpu().permute(1, 2, 0).numpy()
+        # Convert to uint8 for display
+        patch_np = np.clip(patch_np, 0, 255).astype(np.uint8)
         
         # Close previous figure if it exists
         if self.fig is not None:
@@ -48,8 +127,8 @@ class PatchViewer:
         
         # Create a new figure
         self.fig, self.ax = plt.subplots(1, 1, figsize=(6, 6))
-        self.ax.imshow(patch_array)
-        self.ax.set_title(f'Patch at ({x}, {y})')
+        self.ax.imshow(patch_np)
+        self.ax.set_title(f'Patch at ({x}, {y})\nPrediction: {label} (OW: {ow_prob:.2f}%, TW: {tw_prob:.2f}%)')
         self.ax.axis('off')
         
         # Use plt.show(block=False) to not block the main thread
@@ -67,24 +146,28 @@ def main():
     image_path = sys.argv[1]
     model_path = sys.argv[2]
     
-    # Load window size from model
+    # Set device
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+    
+    # Load window size and network from model
     try:
-        window_size = load_model_window(model_path)
+        window_size, net = load_model_window_and_network(model_path, device)
         print(f"Window size: {window_size}")
     except Exception as e:
         print(f"Error loading model: {e}")
         sys.exit(1)
     
-    # Load image
+    # Load image as tensor on the device
     try:
-        image = load_image(image_path)
-        print(f"Image size: {image.size}")
+        image_tensor = load_image_to_tensor(image_path, device)
+        print(f"Image tensor shape: {image_tensor.shape}")
     except Exception as e:
         print(f"Error loading image: {e}")
         sys.exit(1)
     
-    # Get image dimensions
-    width, height = image.size
+    # Get image dimensions from the tensor (C, H, W)
+    _, height, width = image_tensor.shape
     
     # Check if window size is valid
     if window_size > width or window_size > height:
@@ -99,8 +182,8 @@ def main():
     
     while True:
         print(f"Current position: ({x}, {y})")
-        # Show the current patch
-        width, height = viewer.show_patch(image, x, y, window_size)
+        # Show the current patch and get prediction
+        width, height = viewer.show_patch(image_tensor, x, y, window_size, net, device)
         
         # Get user input
         try:
