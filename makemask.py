@@ -166,6 +166,7 @@ def main():
     print(f"Image dimensions: {width}x{height}")
     
     # Create mask tensor on GPU
+    # Initialize with alpha=0 to mark unclassified pixels
     mask_tensor = torch.zeros(height, width, 4, device=device, dtype=torch.uint8)
     
     # Process using smart batching
@@ -174,6 +175,8 @@ def main():
     
     batch_num = 0
     processed_patches = 0
+    ow_count = 0
+    tw_count = 0
     with torch.no_grad():
         for batch, positions in smart_batched_sliding_window(img_tensor, window_size, device, net):
             batch_num += 1
@@ -183,16 +186,48 @@ def main():
             outputs = net(batch)
             predictions = torch.argmax(outputs, dim=1)
             
-            # Update mask on GPU
+            # Count predictions for debugging
+            batch_ow = torch.sum(predictions == 0).item()
+            batch_tw = torch.sum(predictions == 1).item()
+            ow_count += batch_ow
+            tw_count += batch_tw
+            print(f"  Batch predictions - OW: {batch_ow}, TW: {batch_tw}")
+            
+            # Update mask on GPU, only setting unclassified pixels (alpha == 0)
             for i, (y, x) in enumerate(positions):
                 pred = predictions[i].item()
                 
+                # Get the current patch region in the mask
+                patch_slice = slice(y, y + window_size), slice(x, x + window_size)
+                
+                # Create a mask for unclassified pixels in this patch
+                unclassified = mask_tensor[patch_slice[0], patch_slice[1], 3] == 0
+                
                 if pred == 0:  # OW
-                    mask_tensor[y:y+window_size, x:x+window_size, 2] = 255  # Blue
-                    mask_tensor[y:y+window_size, x:x+window_size, 3] = 128  # Alpha
+                    # Only update unclassified pixels
+                    mask_tensor[patch_slice[0], patch_slice[1], 2] = torch.where(
+                        unclassified, 
+                        255, 
+                        mask_tensor[patch_slice[0], patch_slice[1], 2]
+                    )
+                    mask_tensor[patch_slice[0], patch_slice[1], 3] = torch.where(
+                        unclassified, 
+                        128, 
+                        mask_tensor[patch_slice[0], patch_slice[1], 3]
+                    )
                 else:  # TW
-                    mask_tensor[y:y+window_size, x:x+window_size, 0] = 255  # Red
-                    mask_tensor[y:y+window_size, x:x+window_size, 3] = 128  # Alpha
+                    mask_tensor[patch_slice[0], patch_slice[1], 0] = torch.where(
+                        unclassified, 
+                        255, 
+                        mask_tensor[patch_slice[0], patch_slice[1], 0]
+                    )
+                    mask_tensor[patch_slice[0], patch_slice[1], 3] = torch.where(
+                        unclassified, 
+                        128, 
+                        mask_tensor[patch_slice[0], patch_slice[1], 3]
+                    )
+    
+    print(f"Total predictions - OW: {ow_count}, TW: {tw_count}")
 
     # Move mask to CPU and save
     mask = mask_tensor.cpu().numpy()
