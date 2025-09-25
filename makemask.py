@@ -177,21 +177,30 @@ def main():
     processed_patches = 0
     ow_count = 0
     tw_count = 0
+    update_interval = max(1, total_patches // 100)  # Update ~100 times total
+    
     with torch.no_grad():
         for batch, positions in smart_batched_sliding_window(img_tensor, window_size, device, net):
             batch_num += 1
             processed_patches += len(batch)
-            print(f"Processing batch {batch_num} ({len(batch)} patches, {processed_patches}/{total_patches} total)")
+            
+            # Only print progress every N batches or when significant progress is made
+            if batch_num == 1 or processed_patches % update_interval < len(batch) or processed_patches == total_patches:
+                percentage = (processed_patches / total_patches) * 100
+                print(f"Progress: {processed_patches}/{total_patches} ({percentage:.1f}%) - Batch {batch_num}")
             
             outputs = net(batch)
             predictions = torch.argmax(outputs, dim=1)
             
-            # Count predictions for debugging
+            # Count predictions for debugging - only show on significant updates
             batch_ow = torch.sum(predictions == 0).item()
             batch_tw = torch.sum(predictions == 1).item()
             ow_count += batch_ow
             tw_count += batch_tw
-            print(f"  Batch predictions - OW: {batch_ow}, TW: {batch_tw}")
+            
+            if batch_num == 1 or processed_patches % update_interval < len(batch) or processed_patches == total_patches:
+                print(f"  Batch predictions - OW: {batch_ow}, TW: {batch_tw}")
+                print(f"  Cumulative - OW: {ow_count}, TW: {tw_count}")
             
             # Update mask on GPU - set only one pixel per window at its top-left corner
             for i, (y, x) in enumerate(positions):
