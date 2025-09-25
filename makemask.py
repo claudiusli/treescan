@@ -165,7 +165,7 @@ def main():
     _, height, width = img_tensor.shape
     print(f"Image dimensions: {width}x{height}")
     
-    # Create mask tensor on GPU
+    # Create mask tensor on GPU with the same dimensions as the original image
     # Initialize with alpha=0 to mark unclassified pixels
     mask_tensor = torch.zeros(height, width, 4, device=device, dtype=torch.uint8)
     
@@ -193,21 +193,19 @@ def main():
             tw_count += batch_tw
             print(f"  Batch predictions - OW: {batch_ow}, TW: {batch_tw}")
             
-            # Update mask on GPU, always using the latest prediction
+            # Update mask on GPU - set only one pixel per window at its top-left corner
             for i, (y, x) in enumerate(positions):
                 pred = predictions[i].item()
                 
-                # Get the current patch region in the mask
-                patch_slice = slice(y, y + window_size), slice(x, x + window_size)
-                
+                # Set only the pixel at the window's top-left corner (y, x)
                 if pred == 0:  # OW
                     # Set blue channel and alpha
-                    mask_tensor[patch_slice[0], patch_slice[1], 2] = 255  # Blue
-                    mask_tensor[patch_slice[0], patch_slice[1], 3] = 128  # Alpha
+                    mask_tensor[y, x, 2] = 255  # Blue
+                    mask_tensor[y, x, 3] = 255  # Alpha
                 else:  # TW
                     # Set red channel and alpha
-                    mask_tensor[patch_slice[0], patch_slice[1], 0] = 255  # Red
-                    mask_tensor[patch_slice[0], patch_slice[1], 3] = 128  # Alpha
+                    mask_tensor[y, x, 0] = 255  # Red
+                    mask_tensor[y, x, 3] = 255  # Alpha
     
     print(f"Total predictions - OW: {ow_count}, TW: {tw_count}")
 
