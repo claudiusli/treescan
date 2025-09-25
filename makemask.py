@@ -193,39 +193,21 @@ def main():
             tw_count += batch_tw
             print(f"  Batch predictions - OW: {batch_ow}, TW: {batch_tw}")
             
-            # Update mask on GPU, only setting unclassified pixels (alpha == 0)
+            # Update mask on GPU, always using the latest prediction
             for i, (y, x) in enumerate(positions):
                 pred = predictions[i].item()
                 
                 # Get the current patch region in the mask
                 patch_slice = slice(y, y + window_size), slice(x, x + window_size)
                 
-                # Create a mask for unclassified pixels in this patch
-                unclassified = mask_tensor[patch_slice[0], patch_slice[1], 3] == 0
-                
                 if pred == 0:  # OW
-                    # Only update unclassified pixels
-                    mask_tensor[patch_slice[0], patch_slice[1], 2] = torch.where(
-                        unclassified, 
-                        255, 
-                        mask_tensor[patch_slice[0], patch_slice[1], 2]
-                    )
-                    mask_tensor[patch_slice[0], patch_slice[1], 3] = torch.where(
-                        unclassified, 
-                        128, 
-                        mask_tensor[patch_slice[0], patch_slice[1], 3]
-                    )
+                    # Set blue channel and alpha
+                    mask_tensor[patch_slice[0], patch_slice[1], 2] = 255  # Blue
+                    mask_tensor[patch_slice[0], patch_slice[1], 3] = 128  # Alpha
                 else:  # TW
-                    mask_tensor[patch_slice[0], patch_slice[1], 0] = torch.where(
-                        unclassified, 
-                        255, 
-                        mask_tensor[patch_slice[0], patch_slice[1], 0]
-                    )
-                    mask_tensor[patch_slice[0], patch_slice[1], 3] = torch.where(
-                        unclassified, 
-                        128, 
-                        mask_tensor[patch_slice[0], patch_slice[1], 3]
-                    )
+                    # Set red channel and alpha
+                    mask_tensor[patch_slice[0], patch_slice[1], 0] = 255  # Red
+                    mask_tensor[patch_slice[0], patch_slice[1], 3] = 128  # Alpha
     
     print(f"Total predictions - OW: {ow_count}, TW: {tw_count}")
 
