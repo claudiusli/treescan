@@ -61,22 +61,38 @@ def calculate_max_batch_size(window_size, device, net):
     if device.type == 'cpu':
         return 1024  # Use a reasonable batch size for CPU
     
-    # Estimate memory per patch (bytes)
-    # 3 channels, float32 (4 bytes), plus some overhead
-    patch_memory = window_size * window_size * 3 * 4 * 2  # Add safety factor
-    
-    # Get available VRAM (leave 20% buffer for model and overhead)
+    # Get available VRAM (leave 20% buffer for overhead)
     total_memory = torch.cuda.get_device_properties(device).total_memory
     allocated_memory = torch.cuda.memory_allocated(device)
     free_memory = total_memory - allocated_memory
     usable_memory = free_memory * 0.8  # 20% buffer
     
-    max_batch_size = int(usable_memory // patch_memory)
+    # Test with a small batch to measure actual memory usage
+    test_batch_size = 1
+    test_input = torch.randn(test_batch_size, 3, window_size, window_size, device=device)
+    
+    # Clear cache and measure memory usage
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats()
+    
+    # Do a forward pass to measure actual memory usage
+    with torch.no_grad():
+        _ = net(test_input)
+    
+    # Get the peak memory used during forward pass
+    peak_memory = torch.cuda.max_memory_allocated()
+    
+    # Memory per patch is peak memory divided by test batch size
+    memory_per_patch = peak_memory / test_batch_size
+    
+    # Calculate safe batch size
+    max_batch_size = int(usable_memory // memory_per_patch)
     
     # Apply reasonable limits
     max_batch_size = min(max_batch_size, 4096)  # Upper limit
     max_batch_size = max(max_batch_size, 1)     # Lower limit
     
+    print(f"Memory per patch: {memory_per_patch / 1024**2:.2f} MB")
     print(f"Max batch size: {max_batch_size} patches")
     return max_batch_size
 
