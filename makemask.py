@@ -165,13 +165,16 @@ def main():
     _, height, width = img_tensor.shape
     print(f"Image dimensions: {width}x{height}")
     
-    # Create mask tensor on GPU with the same dimensions as the original image
-    # Initialize with alpha=0 to mark unclassified pixels
-    mask_tensor = torch.zeros(height, width, 4, device=device, dtype=torch.uint8)
+    # Calculate mask dimensions (smaller than original image)
+    mask_height = height - window_size + 1
+    mask_width = width - window_size + 1
+    # Create mask tensor on GPU with the correct dimensions
+    mask_tensor = torch.zeros(mask_height, mask_width, 4, device=device, dtype=torch.uint8)
     
     # Process using smart batching
-    total_patches = (height - window_size + 1) * (width - window_size + 1)
+    total_patches = mask_height * mask_width
     print(f"Total patches to process: {total_patches}")
+    print(f"Mask dimensions: {mask_width}x{mask_height}")
     
     batch_num = 0
     processed_patches = 0
@@ -202,11 +205,11 @@ def main():
                 print(f"  Batch predictions - OW: {batch_ow}, TW: {batch_tw}")
                 print(f"  Cumulative - OW: {ow_count}, TW: {tw_count}")
             
-            # Update mask on GPU - set only one pixel per window at its top-left corner
+            # Update mask on GPU - set one pixel per window at the corresponding position in the mask
             for i, (y, x) in enumerate(positions):
                 pred = predictions[i].item()
                 
-                # Set only the pixel at the window's top-left corner (y, x)
+                # The y,x coordinates are already within the mask's dimensions
                 if pred == 0:  # OW
                     # Set blue channel and alpha
                     mask_tensor[y, x, 2] = 255  # Blue
