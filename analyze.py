@@ -3,6 +3,7 @@ from PIL import Image
 import sys
 import os
 import numpy as np
+import matplotlib.pyplot as plt
 
 def load_model_window(model_path):
     """Load the model file and extract the window size"""
@@ -21,22 +22,42 @@ def load_image(image_path):
     """Load the image and return as a PIL Image"""
     return Image.open(image_path)
 
-def show_patch(image, x, y, window_size):
-    """Extract and display the window x window patch at (x, y)"""
-    # Ensure the image is in RGB mode
-    if image.mode != 'RGB':
-        image = image.convert('RGB')
-    
-    # Get image dimensions
-    width, height = image.size
-    
-    # Extract the patch
-    patch = image.crop((x, y, x + window_size, y + window_size))
-    
-    # Display the patch
-    patch.show()
-    
-    return width, height
+class PatchViewer:
+    def __init__(self):
+        self.fig = None
+        self.ax = None
+        
+    def show_patch(self, image, x, y, window_size):
+        """Extract and display the window x window patch at (x, y) in a matplotlib window"""
+        # Ensure the image is in RGB mode
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        
+        # Get image dimensions
+        width, height = image.size
+        
+        # Extract the patch
+        patch = image.crop((x, y, x + window_size, y + window_size))
+        
+        # Convert to numpy array for matplotlib
+        patch_array = np.array(patch)
+        
+        # Close previous figure if it exists
+        if self.fig is not None:
+            plt.close(self.fig)
+        
+        # Create a new figure
+        self.fig, self.ax = plt.subplots(1, 1, figsize=(6, 6))
+        self.ax.imshow(patch_array)
+        self.ax.set_title(f'Patch at ({x}, {y})')
+        self.ax.axis('off')
+        
+        # Use plt.show(block=False) to not block the main thread
+        plt.show(block=False)
+        # Add a small pause to ensure the window is drawn
+        plt.pause(0.1)
+        
+        return width, height
 
 def main():
     if len(sys.argv) != 3:
@@ -70,18 +91,24 @@ def main():
         print(f"Window size {window_size} is larger than image dimensions {width}x{height}")
         sys.exit(1)
     
+    # Initialize the patch viewer
+    viewer = PatchViewer()
+    
     # Start at (0, 0)
     x, y = 0, 0
     
     while True:
         print(f"Current position: ({x}, {y})")
         # Show the current patch
-        width, height = show_patch(image, x, y, window_size)
+        width, height = viewer.show_patch(image, x, y, window_size)
         
         # Get user input
         try:
             user_input = input("Enter number of pixels to move right (negative for left), or 'q' to quit: ")
             if user_input.lower() == 'q':
+                # Close the matplotlib window when quitting
+                if viewer.fig is not None:
+                    plt.close(viewer.fig)
                 break
             
             move = int(user_input)
@@ -123,6 +150,9 @@ def main():
             print("Please enter a valid integer or 'q' to quit")
         except KeyboardInterrupt:
             print("\nExiting...")
+            # Close the matplotlib window when quitting
+            if viewer.fig is not None:
+                plt.close(viewer.fig)
             break
 
 if __name__ == "__main__":
