@@ -20,7 +20,13 @@ class StreamDS(IterableDataset):
         self.tw_img = self._load_image_to_gpu(tw_file, device)
 
     def _load_image_to_gpu(self, path, device):
+        # Disable decompression bomb protection
+        Image.MAX_IMAGE_PIXELS = None
+        
         with Image.open(path) as img:
+            # Load the image data to prevent lazy loading
+            img.load()
+            
             if img.mode != "RGB":
                 img = img.convert("RGB")
             # Convert to tensor and move to GPU
@@ -247,7 +253,13 @@ if __name__ == "__main__":
     if args.mixed_file:
         # Load the mixed image to GPU
         def load_mixed_image_to_gpu(path, device):
+            # Disable decompression bomb protection
+            Image.MAX_IMAGE_PIXELS = None
+            
             with Image.open(path) as img:
+                # Load the image data to prevent lazy loading
+                img.load()
+                
                 if img.mode != "RGB":
                     img = img.convert("RGB")
                 # Convert to tensor and move to GPU
