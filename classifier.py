@@ -125,16 +125,20 @@ def examine(loader):
 
 if __name__ == "__main__":
     import argparse
+    import matplotlib.pyplot as plt
 
     # Set up argument parser
     parser = argparse.ArgumentParser(
         description="Create train and test datasets for image classification"
     )
     parser.add_argument(
-        "--ow_file", type=str, required=True, help="Path to the OW image file"
+        "--ow_file", type=str, help="Path to the OW image file"
     )
     parser.add_argument(
-        "--tw_file", type=str, required=True, help="Path to the TW image file"
+        "--tw_file", type=str, help="Path to the TW image file"
+    )
+    parser.add_argument(
+        "--mixed_file", type=str, help="Path to the mixed image file for interactive classification"
     )
     parser.add_argument(
         "--window", type=int, required=True, help="Window size for cropping patches"
@@ -148,7 +152,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--test_size",
         type=int,
-        required=True,
+        default=0,
         help="Number of samples in the test dataset",
     )
     parser.add_argument(
@@ -173,9 +177,98 @@ if __name__ == "__main__":
     # Parse arguments
     args = parser.parse_args()
 
+    # Check if mixed_file mode is active
+    if args.mixed_file:
+        # In mixed_file mode, we don't need ow_file and tw_file
+        if not args.in_model:
+            print("Error: --in_model must be provided when using --mixed_file")
+            exit(1)
+    else:
+        # In normal mode, both ow_file and tw_file are required
+        if not args.ow_file or not args.tw_file:
+            print("Error: --ow_file and --tw_file are required when not using --mixed_file")
+            exit(1)
+
     # Check if GPU is available
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
+
+    # Handle mixed_file mode
+    if args.mixed_file:
+        # Load the mixed image to GPU
+        def load_mixed_image_to_gpu(path, device):
+            with Image.open(path) as img:
+                if img.mode != "RGB":
+                    img = img.convert("RGB")
+                # Convert to tensor and move to GPU
+                tensor = torch.tensor(np.array(img)).permute(2, 0, 1).float()
+                return tensor.to(device)
+        
+        mixed_img = load_mixed_image_to_gpu(args.mixed_file, device)
+        _, height, width = mixed_img.shape
+        
+        # Initialize the network
+        net = StainDiscriminator(args.window)
+        net.to(device)
+        
+        # Load pre-trained weights
+        if args.in_model:
+            if not os.path.exists(args.in_model):
+                raise FileNotFoundError(f"Model file not found: {args.in_model}")
+            
+            save_data = torch.load(args.in_model, map_location=device)
+            
+            if 'window_size' in save_data:
+                if save_data['window_size'] != args.window:
+                    print(f"Error: Window size mismatch! Model was trained with window size {save_data['window_size']}, "
+                          f"but current window size is {args.window}")
+                    exit(1)
+            else:
+                print("Warning: No window size information found in the model file. Proceeding anyway.")
+            
+            net.load_state_dict(save_data['model_state_dict'])
+            print(f"Loaded pre-trained weights from '{args.in_model}'")
+        
+        net.eval()
+        
+        # Interactive classification loop
+        print("Interactive classification mode. Press Enter to classify a new patch, 'q' to quit.")
+        while True:
+            # Get random coordinates
+            if width < args.window or height < args.window:
+                raise ValueError(
+                    f"Image dimensions {width}x{height} are smaller than window size {args.window}"
+                )
+            x = random.randint(0, width - args.window)
+            y = random.randint(0, height - args.window)
+            
+            # Extract patch directly from GPU tensor
+            patch = mixed_img[:, y:y + args.window, x:x + args.window].unsqueeze(0)
+            
+            # Classify
+            with torch.no_grad():
+                outputs = net(patch)
+                _, predicted = torch.max(outputs.data, 1)
+                classification = "ow" if predicted.item() == 0 else "tw"
+            
+            # Convert patch to displayable format
+            patch_np = patch.squeeze(0).cpu().permute(1, 2, 0).byte().numpy()
+            
+            # Display the patch
+            plt.figure(figsize=(6, 6))
+            plt.imshow(patch_np)
+            plt.title(f"Position: ({x}, {y}), Classification: {classification}")
+            plt.axis('off')
+            plt.tight_layout()
+            plt.show(block=False)
+            
+            # Wait for user input
+            user_input = input("Press Enter for next patch, 'q' to quit: ")
+            plt.close()
+            
+            if user_input.lower() == 'q':
+                break
+        exit(0)
 
     # Create datasets using provided arguments
     train, test = stream(
