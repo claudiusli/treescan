@@ -123,6 +123,56 @@ def examine(loader):
     print("Note: Only examined first 5 batches to avoid consuming the entire iterator")
 
 
+# Define a network optimized for color-based stain discrimination
+class StainDiscriminator(nn.Module):
+    def __init__(self, window_size):
+        super(StainDiscriminator, self).__init__()
+
+        # Focus on color channel relationships - use 1x1 convolutions to learn color combinations
+        self.color_attention = nn.Sequential(
+            nn.Conv2d(3, 16, 1),  # 1x1 conv to learn color relationships
+            nn.ReLU(),
+            nn.Conv2d(16, 3, 1),  # Project back to 3 channels
+            nn.Sigmoid(),  # Attention weights for color channels
+        )
+
+        # Simple feature extraction
+        self.feature_extractor = nn.Sequential(
+            nn.Conv2d(3, 32, 3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2),
+            nn.Conv2d(32, 64, 3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2),
+            nn.Conv2d(64, 128, 3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+        )
+
+        # Global average pooling for spatial invariance
+        self.global_pool = nn.AdaptiveAvgPool2d(1)
+
+        # Simple classifier
+        self.classifier = nn.Sequential(
+            nn.Linear(128, 32), nn.ReLU(), nn.Dropout(0.3), nn.Linear(32, 2)
+        )
+
+    def forward(self, x):
+        # Apply color attention to emphasize stain differences
+        color_weights = self.color_attention(x)
+        x = x * color_weights  # Weight color channels
+
+        # Extract features
+        features = self.feature_extractor(x)
+
+        # Global pooling and classification
+        pooled = self.global_pool(features)
+        flattened = pooled.view(pooled.size(0), -1)
+        return self.classifier(flattened)
+
+
 if __name__ == "__main__":
     import argparse
     import matplotlib.pyplot as plt
@@ -292,55 +342,6 @@ if __name__ == "__main__":
     # Check if GPU is available
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-
-    # Define a network optimized for color-based stain discrimination
-    class StainDiscriminator(nn.Module):
-        def __init__(self, window_size):
-            super(StainDiscriminator, self).__init__()
-
-            # Focus on color channel relationships - use 1x1 convolutions to learn color combinations
-            self.color_attention = nn.Sequential(
-                nn.Conv2d(3, 16, 1),  # 1x1 conv to learn color relationships
-                nn.ReLU(),
-                nn.Conv2d(16, 3, 1),  # Project back to 3 channels
-                nn.Sigmoid(),  # Attention weights for color channels
-            )
-
-            # Simple feature extraction
-            self.feature_extractor = nn.Sequential(
-                nn.Conv2d(3, 32, 3, padding=1),
-                nn.BatchNorm2d(32),
-                nn.ReLU(),
-                nn.MaxPool2d(2, 2),
-                nn.Conv2d(32, 64, 3, padding=1),
-                nn.BatchNorm2d(64),
-                nn.ReLU(),
-                nn.MaxPool2d(2, 2),
-                nn.Conv2d(64, 128, 3, padding=1),
-                nn.BatchNorm2d(128),
-                nn.ReLU(),
-            )
-
-            # Global average pooling for spatial invariance
-            self.global_pool = nn.AdaptiveAvgPool2d(1)
-
-            # Simple classifier
-            self.classifier = nn.Sequential(
-                nn.Linear(128, 32), nn.ReLU(), nn.Dropout(0.3), nn.Linear(32, 2)
-            )
-
-        def forward(self, x):
-            # Apply color attention to emphasize stain differences
-            color_weights = self.color_attention(x)
-            x = x * color_weights  # Weight color channels
-
-            # Extract features
-            features = self.feature_extractor(x)
-
-            # Global pooling and classification
-            pooled = self.global_pool(features)
-            flattened = pooled.view(pooled.size(0), -1)
-            return self.classifier(flattened)
 
     # Initialize the network, loss function, and optimizer
     net = StainDiscriminator(args.window)
