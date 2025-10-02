@@ -13,6 +13,8 @@ import argparse
 from pathlib import Path
 from PIL import Image
 import numpy as np
+import torch
+import torch.nn.functional as F
 from typing import List, Tuple, Optional
 
 
@@ -51,12 +53,131 @@ def normalize_image_format(image_path: Path, output_path: Path, target_format: s
         print(f"Error processing {image_path.name}: {e}")
 
 
+def find_image_in_larger_gpu(small_img: np.ndarray, large_img: np.ndarray, 
+                            threshold: float = 0.99, device: str = None) -> Optional[Tuple[int, int]]:
+    """
+    Find if small image exists within large image using GPU-accelerated template matching.
+    Returns (x, y) coordinates if found, None otherwise.
+    """
+    if small_img.shape[0] > large_img.shape[0] or small_img.shape[1] > large_img.shape[1]:
+        return None
+    
+    # Auto-detect device if not specified
+    if device is None:
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    
+    # Convert to grayscale for faster matching
+    if len(small_img.shape) == 3:
+        small_gray = np.mean(small_img, axis=2)
+        large_gray = np.mean(large_img, axis=2)
+    else:
+        small_gray = small_img
+        large_gray = large_img
+    
+    # Convert to PyTorch tensors and move to GPU
+    small_tensor = torch.from_numpy(small_gray).float().to(device) / 255.0
+    large_tensor = torch.from_numpy(large_gray).float().to(device) / 255.0
+    
+    # Add batch and channel dimensions for conv2d
+    small_tensor = small_tensor.unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
+    large_tensor = large_tensor.unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
+    
+    # Use normalized cross-correlation via convolution
+    # Flip the small image for convolution (correlation = convolution with flipped kernel)
+    small_flipped = torch.flip(small_tensor, [2, 3])
+    
+    # Perform template matching using F.conv2d
+    correlation_map = F.conv2d(large_tensor, small_flipped, padding=0)
+    
+    # Normalize the correlation map
+    h, w = small_tensor.shape[2], small_tensor.shape[3]
+    
+    # Calculate local means and standard deviations for normalization
+    ones_kernel = torch.ones(1, 1, h, w, device=device)
+    large_mean = F.conv2d(large_tensor, ones_kernel, padding=0) / (h * w)
+    large_sq_mean = F.conv2d(large_tensor ** 2, ones_kernel, padding=0) / (h * w)
+    large_std = torch.sqrt(large_sq_mean - large_mean ** 2)
+    
+    small_mean = torch.mean(small_tensor)
+    small_std = torch.std(small_tensor)
+    
+    # Normalize correlation
+    normalized_corr = (correlation_map / (h * w) - large_mean * small_mean) / (large_std * small_std + 1e-8)
+    
+    # Find the best match
+    max_corr, max_idx = torch.max(normalized_corr.flatten(), 0)
+    
+    if max_corr.item() > threshold:
+        # Convert flat index back to 2D coordinates
+        corr_h, corr_w = normalized_corr.shape[2], normalized_corr.shape[3]
+        y = max_idx.item() // corr_w
+        x = max_idx.item() % corr_w
+        return (x, y)
+    
+    return None
+
+
+def find_image_in_larger_early_exit(small_img: np.ndarray, large_img: np.ndarray, 
+                                   threshold: float = 0.99, tolerance: float = 0.01) -> Optional[Tuple[int, int]]:
+    """
+    CPU fallback with early exit optimization for exact pixel matching.
+    Returns (x, y) coordinates if found, None otherwise.
+    """
+    if small_img.shape[0] > large_img.shape[0] or small_img.shape[1] > large_img.shape[1]:
+        return None
+    
+    h, w = small_img.shape[:2]
+    large_h, large_w = large_img.shape[:2]
+    
+    # For exact matching, compare pixel by pixel with early exit
+    for y in range(large_h - h + 1):
+        for x in range(large_w - w + 1):
+            # Extract patch from large image
+            patch = large_img[y:y+h, x:x+w]
+            
+            # Early exit comparison - stop as soon as we find a mismatch
+            match = True
+            if len(small_img.shape) == 3:  # Color image
+                for i in range(h):
+                    for j in range(w):
+                        if np.any(np.abs(small_img[i, j] - patch[i, j]) > tolerance * 255):
+                            match = False
+                            break
+                    if not match:
+                        break
+            else:  # Grayscale
+                for i in range(h):
+                    for j in range(w):
+                        if abs(small_img[i, j] - patch[i, j]) > tolerance * 255:
+                            match = False
+                            break
+                    if not match:
+                        break
+            
+            if match:
+                return (x, y)
+    
+    return None
+
+
 def find_image_in_larger(small_img: np.ndarray, large_img: np.ndarray, 
                         threshold: float = 0.99) -> Optional[Tuple[int, int]]:
     """
-    Find if small image exists within large image using template matching.
+    Find if small image exists within large image using optimized template matching.
     Returns (x, y) coordinates if found, None otherwise.
     """
+    # Try GPU acceleration first if available
+    if torch.cuda.is_available():
+        try:
+            return find_image_in_larger_gpu(small_img, large_img, threshold)
+        except Exception as e:
+            print(f"GPU matching failed, falling back to CPU: {e}")
+    
+    # Fallback to CPU with early exit for exact matches
+    if threshold >= 0.99:
+        return find_image_in_larger_early_exit(small_img, large_img, threshold)
+    
+    # Original CPU implementation for lower thresholds
     if small_img.shape[0] > large_img.shape[0] or small_img.shape[1] > large_img.shape[1]:
         return None
     
@@ -98,6 +219,13 @@ def find_image_in_larger(small_img: np.ndarray, large_img: np.ndarray,
 def check_image_containment(image_files: List[Path]) -> None:
     """Check if smaller images are contained within larger images."""
     print("\nChecking for image containment...")
+    
+    # Check if GPU is available
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    if device == 'cuda':
+        print(f"Using GPU acceleration (CUDA)")
+    else:
+        print(f"Using CPU processing")
     
     # Load all images and sort by size
     images_data = []
