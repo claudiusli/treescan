@@ -27,10 +27,26 @@ class StreamDS(IterableDataset):
             # Load the image data to prevent lazy loading
             img.load()
             
+            # Always convert to RGB to ensure consistent channel ordering
             if img.mode != "RGB":
                 img = img.convert("RGB")
+            
+            # Convert to numpy array and ensure proper data type
+            img_array = np.array(img)
+            
+            # Ensure the array is in the correct data type and range
+            if img_array.dtype != np.uint8:
+                # Normalize if necessary, but for now, just convert to uint8
+                # This may need adjustment based on your specific image types
+                if img_array.dtype == np.uint16:
+                    img_array = (img_array / 256).astype(np.uint8)
+                else:
+                    # For other types, scale to 0-255
+                    img_array = (img_array - img_array.min()) / (img_array.max() - img_array.min()) * 255
+                    img_array = img_array.astype(np.uint8)
+            
             # Convert to tensor and move to GPU
-            tensor = torch.tensor(np.array(img)).permute(2, 0, 1).float()
+            tensor = torch.tensor(img_array).permute(2, 0, 1).float()
             return tensor.to(device)
 
     def __iter__(self):
@@ -260,10 +276,26 @@ if __name__ == "__main__":
                 # Load the image data to prevent lazy loading
                 img.load()
                 
+                # Always convert to RGB to ensure consistent channel ordering
                 if img.mode != "RGB":
                     img = img.convert("RGB")
+                
+                # Convert to numpy array and ensure proper data type
+                img_array = np.array(img)
+                
+                # Ensure the array is in the correct data type and range
+                if img_array.dtype != np.uint8:
+                    # Normalize if necessary, but for now, just convert to uint8
+                    # This may need adjustment based on your specific image types
+                    if img_array.dtype == np.uint16:
+                        img_array = (img_array / 256).astype(np.uint8)
+                    else:
+                        # For other types, scale to 0-255
+                        img_array = (img_array - img_array.min()) / (img_array.max() - img_array.min()) * 255
+                        img_array = img_array.astype(np.uint8)
+                
                 # Convert to tensor and move to GPU
-                tensor = torch.tensor(np.array(img)).permute(2, 0, 1).float()
+                tensor = torch.tensor(img_array).permute(2, 0, 1).float()
                 return tensor.to(device)
         
         mixed_img = load_mixed_image_to_gpu(args.mixed_file, device)
@@ -310,11 +342,20 @@ if __name__ == "__main__":
             # Classify
             with torch.no_grad():
                 outputs = net(patch)
+                # Apply softmax to get probabilities
+                probabilities = torch.nn.functional.softmax(outputs, dim=1)
                 _, predicted = torch.max(outputs.data, 1)
                 classification = "ow" if predicted.item() == 0 else "tw"
             
+            # Print some debug info
+            print(f"Outputs: {outputs.cpu().numpy()}")
+            print(f"Probabilities: OW: {probabilities[0][0].item():.4f}, TW: {probabilities[0][1].item():.4f}")
+            
             # Convert patch to displayable format
             patch_np = patch.squeeze(0).cpu().permute(1, 2, 0).byte().numpy()
+            
+            # Print patch statistics
+            print(f"Patch stats - Min: {patch.min().item():.2f}, Max: {patch.max().item():.2f}, Mean: {patch.mean().item():.2f}")
             
             # Display the patch
             plt.figure(figsize=(6, 6))
