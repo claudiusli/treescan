@@ -150,7 +150,7 @@ def find_image_in_larger(small_img: np.ndarray, large_img: np.ndarray,
 
 
 def check_image_containment(image_files: List[Path]) -> None:
-    """Check if smaller images are contained within larger images."""
+    """Check if smaller images are contained within the largest image."""
     print("\nChecking for image containment...")
     
     # Check if GPU is available
@@ -160,10 +160,8 @@ def check_image_containment(image_files: List[Path]) -> None:
     else:
         print(f"Using CPU processing")
     
-    # Load all images to GPU memory once and sort by size
-    images_data = []
-    print("Loading images to GPU memory...")
-    
+    # First, find the largest image by file size
+    images_info = []
     for img_path in image_files:
         try:
             with Image.open(img_path) as img:
@@ -172,38 +170,53 @@ def check_image_containment(image_files: List[Path]) -> None:
                     img = img.convert("RGB")
                 img_array = np.array(img)
                 size = img_array.shape[0] * img_array.shape[1]
-                
-                # Convert to tensor and move to GPU immediately
-                img_tensor = torch.from_numpy(img_array).float().to(device) / 255.0
-                img_tensor = img_tensor.permute(2, 0, 1)  # CHW format
-                
-                images_data.append((img_path, img_tensor, size))
-                print(f"  Loaded {img_path.name} ({img_array.shape}) to {device}")
-                
+                images_info.append((img_path, img_array, size))
         except Exception as e:
             print(f"Error loading {img_path.name}: {e}")
     
     # Sort by size (largest first)
-    images_data.sort(key=lambda x: x[2], reverse=True)
+    images_info.sort(key=lambda x: x[2], reverse=True)
     
-    # Check each smaller image against larger ones
-    for i, (small_path, small_tensor, small_size) in enumerate(images_data[1:], 1):
-        for j, (large_path, large_tensor, large_size) in enumerate(images_data[:i]):
-            print(f"Checking if {small_path.name} is in {large_path.name}...")
-            
-            # Skip comparison if images have the same dimensions (likely same image, different format)
-            if (small_tensor.shape[1] == large_tensor.shape[1] and 
-                small_tensor.shape[2] == large_tensor.shape[2]):
-                print(f"  MATCH FOUND: {small_path.name} found in {large_path.name} at coordinates (0, 0) - same dimensions")
-                continue
-            
-            # Perform pixel-by-pixel matching on GPU
-            match_pos = find_image_in_larger_tensors(small_tensor, large_tensor, device)
-            if match_pos:
-                x, y = match_pos
-                print(f"  MATCH FOUND: {small_path.name} found in {large_path.name} at coordinates ({x}, {y})")
-            else:
-                print(f"  No match found")
+    if len(images_info) < 2:
+        print("Need at least 2 images for comparison")
+        return
+    
+    # Load only the largest image to GPU as reference
+    largest_path, largest_array, largest_size = images_info[0]
+    print(f"Loading reference image {largest_path.name} ({largest_array.shape}) to {device}")
+    
+    largest_tensor = torch.from_numpy(largest_array).float().to(device) / 255.0
+    largest_tensor = largest_tensor.permute(2, 0, 1)  # CHW format
+    
+    # Test each smaller image against the largest one
+    for small_path, small_array, small_size in images_info[1:]:
+        print(f"Checking if {small_path.name} is in {largest_path.name}...")
+        
+        # Skip comparison if images have the same dimensions (likely same image, different format)
+        if (small_array.shape[0] == largest_array.shape[0] and 
+            small_array.shape[1] == largest_array.shape[1]):
+            print(f"  MATCH FOUND: {small_path.name} found in {largest_path.name} at coordinates (0, 0) - same dimensions")
+            continue
+        
+        # Load small image to GPU temporarily
+        small_tensor = torch.from_numpy(small_array).float().to(device) / 255.0
+        small_tensor = small_tensor.permute(2, 0, 1)  # CHW format
+        
+        # Perform pixel-by-pixel matching on GPU
+        match_pos = find_image_in_larger_tensors(small_tensor, largest_tensor, device)
+        if match_pos:
+            x, y = match_pos
+            print(f"  MATCH FOUND: {small_path.name} found in {largest_path.name} at coordinates ({x}, {y})")
+        else:
+            print(f"  No match found")
+        
+        # Free GPU memory for the small image
+        del small_tensor
+        torch.cuda.empty_cache() if device == 'cuda' else None
+    
+    # Clean up the largest image tensor
+    del largest_tensor
+    torch.cuda.empty_cache() if device == 'cuda' else None
 
 
 def find_image_in_larger_tensors(small_tensor: torch.Tensor, large_tensor: torch.Tensor, 
