@@ -31,19 +31,19 @@ class StreamDS(IterableDataset):
             if img.mode != "RGB":
                 img = img.convert("RGB")
             
-            # Convert to numpy array and ensure proper data type
+            # Convert to numpy array
             img_array = np.array(img)
             
-            # Ensure the array is in the correct data type and range
-            if img_array.dtype != np.uint8:
-                # Normalize if necessary, but for now, just convert to uint8
-                # This may need adjustment based on your specific image types
-                if img_array.dtype == np.uint16:
-                    img_array = (img_array / 256).astype(np.uint8)
-                else:
-                    # For other types, scale to 0-255
-                    img_array = (img_array - img_array.min()) / (img_array.max() - img_array.min()) * 255
-                    img_array = img_array.astype(np.uint8)
+            # Normalize to 0-1 range based on the data type
+            if img_array.dtype == np.uint8:
+                img_array = img_array.astype(np.float32) / 255.0
+            elif img_array.dtype == np.uint16:
+                img_array = img_array.astype(np.float32) / 65535.0
+            else:
+                # For other types, normalize to 0-1
+                img_array = img_array.astype(np.float32)
+                if img_array.max() > img_array.min():
+                    img_array = (img_array - img_array.min()) / (img_array.max() - img_array.min())
             
             # Convert to tensor and move to GPU
             tensor = torch.tensor(img_array).permute(2, 0, 1).float()
@@ -280,19 +280,19 @@ if __name__ == "__main__":
                 if img.mode != "RGB":
                     img = img.convert("RGB")
                 
-                # Convert to numpy array and ensure proper data type
+                # Convert to numpy array
                 img_array = np.array(img)
                 
-                # Ensure the array is in the correct data type and range
-                if img_array.dtype != np.uint8:
-                    # Normalize if necessary, but for now, just convert to uint8
-                    # This may need adjustment based on your specific image types
-                    if img_array.dtype == np.uint16:
-                        img_array = (img_array / 256).astype(np.uint8)
-                    else:
-                        # For other types, scale to 0-255
-                        img_array = (img_array - img_array.min()) / (img_array.max() - img_array.min()) * 255
-                        img_array = img_array.astype(np.uint8)
+                # Normalize to 0-1 range based on the data type
+                if img_array.dtype == np.uint8:
+                    img_array = img_array.astype(np.float32) / 255.0
+                elif img_array.dtype == np.uint16:
+                    img_array = img_array.astype(np.float32) / 65535.0
+                else:
+                    # For other types, normalize to 0-1
+                    img_array = img_array.astype(np.float32)
+                    if img_array.max() > img_array.min():
+                        img_array = (img_array - img_array.min()) / (img_array.max() - img_array.min())
                 
                 # Convert to tensor and move to GPU
                 tensor = torch.tensor(img_array).permute(2, 0, 1).float()
@@ -355,7 +355,7 @@ if __name__ == "__main__":
             patch_np = patch.squeeze(0).cpu().permute(1, 2, 0).byte().numpy()
             
             # Print patch statistics
-            print(f"Patch stats - Min: {patch.min().item():.2f}, Max: {patch.max().item():.2f}, Mean: {patch.mean().item():.2f}")
+            print(f"Patch stats - Min: {patch.min().item():.6f}, Max: {patch.max().item():.6f}, Mean: {patch.mean().item():.6f}")
             
             # Display the patch
             plt.figure(figsize=(6, 6))
