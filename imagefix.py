@@ -118,9 +118,9 @@ def find_image_in_larger_gpu(small_img: np.ndarray, large_img: np.ndarray,
 
 
 def find_image_in_larger_early_exit(small_img: np.ndarray, large_img: np.ndarray, 
-                                   threshold: float = 0.99, tolerance: float = 0.01) -> Optional[Tuple[int, int]]:
+                                   threshold: float = 0.99, tolerance: float = 0.05) -> Optional[Tuple[int, int]]:
     """
-    CPU fallback with early exit optimization for exact pixel matching.
+    CPU fallback with early exit optimization for pixel matching with format tolerance.
     Returns (x, y) coordinates if found, None otherwise.
     """
     if small_img.shape[0] > large_img.shape[0] or small_img.shape[1] > large_img.shape[1]:
@@ -129,33 +129,54 @@ def find_image_in_larger_early_exit(small_img: np.ndarray, large_img: np.ndarray
     h, w = small_img.shape[:2]
     large_h, large_w = large_img.shape[:2]
     
-    # For exact matching, compare pixel by pixel with early exit
+    # For matching with format tolerance, use correlation-based approach with early exit
+    small_float = small_img.astype(np.float32)
+    large_float = large_img.astype(np.float32)
+    
     for y in range(large_h - h + 1):
         for x in range(large_w - w + 1):
             # Extract patch from large image
-            patch = large_img[y:y+h, x:x+w]
+            patch = large_float[y:y+h, x:x+w]
             
-            # Early exit comparison - stop as soon as we find a mismatch
-            match = True
+            # Calculate correlation coefficient for early assessment
             if len(small_img.shape) == 3:  # Color image
-                for i in range(h):
-                    for j in range(w):
-                        if np.any(np.abs(small_img[i, j] - patch[i, j]) > tolerance * 255):
-                            match = False
-                            break
-                    if not match:
-                        break
+                # Calculate per-channel correlation and take mean
+                correlations = []
+                for c in range(3):
+                    small_flat = small_float[:, :, c].flatten()
+                    patch_flat = patch[:, :, c].flatten()
+                    
+                    # Quick variance check for early exit
+                    if np.var(small_flat) < 1e-6 or np.var(patch_flat) < 1e-6:
+                        # Handle constant regions
+                        if np.allclose(small_flat, patch_flat, atol=tolerance * 255):
+                            correlations.append(1.0)
+                        else:
+                            correlations.append(0.0)
+                            break  # Early exit on channel mismatch
+                    else:
+                        corr = np.corrcoef(small_flat, patch_flat)[0, 1]
+                        if np.isnan(corr):
+                            corr = 0.0
+                        correlations.append(corr)
+                        if corr < threshold:
+                            break  # Early exit on low correlation
+                
+                if len(correlations) == 3 and np.mean(correlations) >= threshold:
+                    return (x, y)
+                    
             else:  # Grayscale
-                for i in range(h):
-                    for j in range(w):
-                        if abs(small_img[i, j] - patch[i, j]) > tolerance * 255:
-                            match = False
-                            break
-                    if not match:
-                        break
-            
-            if match:
-                return (x, y)
+                small_flat = small_float.flatten()
+                patch_flat = patch.flatten()
+                
+                if np.var(small_flat) < 1e-6 or np.var(patch_flat) < 1e-6:
+                    # Handle constant regions
+                    if np.allclose(small_flat, patch_flat, atol=tolerance * 255):
+                        return (x, y)
+                else:
+                    corr = np.corrcoef(small_flat, patch_flat)[0, 1]
+                    if not np.isnan(corr) and corr >= threshold:
+                        return (x, y)
     
     return None
 
@@ -173,8 +194,8 @@ def find_image_in_larger(small_img: np.ndarray, large_img: np.ndarray,
         except Exception as e:
             print(f"GPU matching failed, falling back to CPU: {e}")
     
-    # Fallback to CPU with early exit for exact matches
-    if threshold >= 0.99:
+    # Fallback to CPU with early exit for high-threshold matches
+    if threshold >= 0.95:
         return find_image_in_larger_early_exit(small_img, large_img, threshold)
     
     # Original CPU implementation for lower thresholds
@@ -248,6 +269,12 @@ def check_image_containment(image_files: List[Path]) -> None:
     for i, (small_path, small_img, small_size) in enumerate(images_data[1:], 1):
         for j, (large_path, large_img, large_size) in enumerate(images_data[:i]):
             print(f"Checking if {small_path.name} is in {large_path.name}...")
+            
+            # Skip comparison if images have the same dimensions (likely same image, different format)
+            if (small_img.shape[0] == large_img.shape[0] and 
+                small_img.shape[1] == large_img.shape[1]):
+                print(f"  MATCH FOUND: {small_path.name} found in {large_path.name} at coordinates (0, 0) - same dimensions")
+                continue
             
             match_pos = find_image_in_larger(small_img, large_img)
             if match_pos:
