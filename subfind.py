@@ -12,11 +12,12 @@ import argparse
 from pathlib import Path
 from PIL import Image
 import numpy as np
+import torch
 from typing import Optional, Tuple
 
 
-def load_image_as_array(image_path: Path) -> np.ndarray:
-    """Load PNG image and convert to numpy array."""
+def load_image_to_gpu(image_path: Path, device: str) -> torch.Tensor:
+    """Load PNG image and convert to GPU tensor."""
     try:
         # Disable decompression bomb protection for large images
         Image.MAX_IMAGE_PIXELS = None
@@ -29,16 +30,20 @@ def load_image_as_array(image_path: Path) -> np.ndarray:
             if img.mode != "RGB":
                 img = img.convert("RGB")
             
-            return np.array(img)
+            # Convert to numpy array then to tensor and move to GPU
+            img_array = np.array(img)
+            img_tensor = torch.from_numpy(img_array).to(device)
+            
+            return img_tensor
             
     except Exception as e:
         print(f"Error loading {image_path}: {e}")
         sys.exit(1)
 
 
-def find_subimage_exact(large_img: np.ndarray, small_img: np.ndarray) -> Optional[Tuple[int, int]]:
+def find_subimage_exact_gpu(large_img: torch.Tensor, small_img: torch.Tensor) -> Optional[Tuple[int, int]]:
     """
-    Find if small image exists within large image using exact pixel matching.
+    Find if small image exists within large image using exact pixel matching on GPU.
     Returns (x, y) coordinates of top-left corner if found, None otherwise.
     """
     large_h, large_w = large_img.shape[:2]
@@ -51,20 +56,11 @@ def find_subimage_exact(large_img: np.ndarray, small_img: np.ndarray) -> Optiona
     # Iterate through all possible positions in the large image
     for start_y in range(large_h - small_h + 1):
         for start_x in range(large_w - small_w + 1):
-            # Compare pixel by pixel with early exit on mismatch
-            match = True
-            for y in range(small_h):
-                for x in range(small_w):
-                    for c in range(3):  # RGB channels
-                        if large_img[start_y + y, start_x + x, c] != small_img[y, x, c]:
-                            match = False
-                            break
-                    if not match:
-                        break
-                if not match:
-                    break
+            # Extract patch from large image at current position
+            patch = large_img[start_y:start_y+small_h, start_x:start_x+small_w]
             
-            if match:
+            # Compare using tensor equality with early exit
+            if torch.equal(small_img, patch):
                 return (start_x, start_y)
     
     return None
@@ -89,12 +85,15 @@ def main():
         print(f"Error: Small image file {small_path} does not exist")
         sys.exit(1)
     
-    # Load images
-    large_img = load_image_as_array(large_path)
-    small_img = load_image_as_array(small_path)
+    # Determine device (GPU if available, otherwise CPU)
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
-    # Find subimage using exact matching
-    result = find_subimage_exact(large_img, small_img)
+    # Load images directly to GPU/device
+    large_img = load_image_to_gpu(large_path, device)
+    small_img = load_image_to_gpu(small_path, device)
+    
+    # Find subimage using exact matching on GPU
+    result = find_subimage_exact_gpu(large_img, small_img)
     
     if result:
         x, y = result
