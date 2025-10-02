@@ -53,186 +53,98 @@ def normalize_image_format(image_path: Path, output_path: Path, target_format: s
         print(f"Error processing {image_path.name}: {e}")
 
 
-def find_image_in_larger_gpu(small_img: np.ndarray, large_img: np.ndarray, 
-                            threshold: float = 0.99, device: str = None) -> Optional[Tuple[int, int]]:
+def find_image_in_larger_gpu(small_tensor: torch.Tensor, large_tensor: torch.Tensor, 
+                            device: str) -> Optional[Tuple[int, int]]:
     """
-    Find if small image exists within large image using GPU-accelerated template matching.
+    Find if small image exists within large image using GPU pixel-by-pixel matching.
     Returns (x, y) coordinates if found, None otherwise.
     """
-    if small_img.shape[0] > large_img.shape[0] or small_img.shape[1] > large_img.shape[1]:
+    small_h, small_w = small_tensor.shape[1], small_tensor.shape[2]
+    large_h, large_w = large_tensor.shape[1], large_tensor.shape[2]
+    
+    if small_h > large_h or small_w > large_w:
         return None
     
-    # Auto-detect device if not specified
-    if device is None:
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    
-    # Convert to grayscale for faster matching
-    if len(small_img.shape) == 3:
-        small_gray = np.mean(small_img, axis=2)
-        large_gray = np.mean(large_img, axis=2)
-    else:
-        small_gray = small_img
-        large_gray = large_img
-    
-    # Convert to PyTorch tensors and move to GPU
-    small_tensor = torch.from_numpy(small_gray).float().to(device) / 255.0
-    large_tensor = torch.from_numpy(large_gray).float().to(device) / 255.0
-    
-    # Add batch and channel dimensions for conv2d
-    small_tensor = small_tensor.unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
-    large_tensor = large_tensor.unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
-    
-    # Use normalized cross-correlation via convolution
-    # Flip the small image for convolution (correlation = convolution with flipped kernel)
-    small_flipped = torch.flip(small_tensor, [2, 3])
-    
-    # Perform template matching using F.conv2d
-    correlation_map = F.conv2d(large_tensor, small_flipped, padding=0)
-    
-    # Normalize the correlation map
-    h, w = small_tensor.shape[2], small_tensor.shape[3]
-    
-    # Calculate local means and standard deviations for normalization
-    ones_kernel = torch.ones(1, 1, h, w, device=device)
-    large_mean = F.conv2d(large_tensor, ones_kernel, padding=0) / (h * w)
-    large_sq_mean = F.conv2d(large_tensor ** 2, ones_kernel, padding=0) / (h * w)
-    large_std = torch.sqrt(large_sq_mean - large_mean ** 2)
-    
-    small_mean = torch.mean(small_tensor)
-    small_std = torch.std(small_tensor)
-    
-    # Normalize correlation
-    normalized_corr = (correlation_map / (h * w) - large_mean * small_mean) / (large_std * small_std + 1e-8)
-    
-    # Find the best match
-    max_corr, max_idx = torch.max(normalized_corr.flatten(), 0)
-    
-    if max_corr.item() > threshold:
-        # Convert flat index back to 2D coordinates
-        corr_h, corr_w = normalized_corr.shape[2], normalized_corr.shape[3]
-        y = max_idx.item() // corr_w
-        x = max_idx.item() % corr_w
-        return (x, y)
-    
-    return None
-
-
-def find_image_in_larger_early_exit(small_img: np.ndarray, large_img: np.ndarray, 
-                                   threshold: float = 0.99, tolerance: float = 0.05) -> Optional[Tuple[int, int]]:
-    """
-    CPU fallback with early exit optimization for pixel matching with format tolerance.
-    Returns (x, y) coordinates if found, None otherwise.
-    """
-    if small_img.shape[0] > large_img.shape[0] or small_img.shape[1] > large_img.shape[1]:
-        return None
-    
-    h, w = small_img.shape[:2]
-    large_h, large_w = large_img.shape[:2]
-    
-    # For matching with format tolerance, use correlation-based approach with early exit
-    small_float = small_img.astype(np.float32)
-    large_float = large_img.astype(np.float32)
-    
-    for y in range(large_h - h + 1):
-        for x in range(large_w - w + 1):
-            # Extract patch from large image
-            patch = large_float[y:y+h, x:x+w]
+    # Iterate through all possible positions in the large image
+    for start_y in range(large_h - small_h + 1):
+        for start_x in range(large_w - small_w + 1):
+            # Extract patch from large image at current position
+            patch = large_tensor[:, start_y:start_y+small_h, start_x:start_x+small_w]
             
-            # Calculate correlation coefficient for early assessment
-            if len(small_img.shape) == 3:  # Color image
-                # Calculate per-channel correlation and take mean
-                correlations = []
-                for c in range(3):
-                    small_flat = small_float[:, :, c].flatten()
-                    patch_flat = patch[:, :, c].flatten()
-                    
-                    # Quick variance check for early exit
-                    if np.var(small_flat) < 1e-6 or np.var(patch_flat) < 1e-6:
-                        # Handle constant regions
-                        if np.allclose(small_flat, patch_flat, atol=tolerance * 255):
-                            correlations.append(1.0)
-                        else:
-                            correlations.append(0.0)
-                            break  # Early exit on channel mismatch
-                    else:
-                        corr = np.corrcoef(small_flat, patch_flat)[0, 1]
-                        if np.isnan(corr):
-                            corr = 0.0
-                        correlations.append(corr)
-                        if corr < threshold:
-                            break  # Early exit on low correlation
-                
-                if len(correlations) == 3 and np.mean(correlations) >= threshold:
-                    return (x, y)
-                    
-            else:  # Grayscale
-                small_flat = small_float.flatten()
-                patch_flat = patch.flatten()
-                
-                if np.var(small_flat) < 1e-6 or np.var(patch_flat) < 1e-6:
-                    # Handle constant regions
-                    if np.allclose(small_flat, patch_flat, atol=tolerance * 255):
-                        return (x, y)
-                else:
-                    corr = np.corrcoef(small_flat, patch_flat)[0, 1]
-                    if not np.isnan(corr) and corr >= threshold:
-                        return (x, y)
+            # Compare pixel by pixel with early exit
+            match = True
+            for y in range(small_h):
+                for x in range(small_w):
+                    for c in range(3):  # RGB channels
+                        if torch.abs(small_tensor[c, y, x] - patch[c, y, x]) > 0.02:  # Small tolerance for format differences
+                            match = False
+                            break
+                    if not match:
+                        break
+                if not match:
+                    break
+            
+            if match:
+                return (start_x, start_y)
     
     return None
 
 
 def find_image_in_larger(small_img: np.ndarray, large_img: np.ndarray, 
-                        threshold: float = 0.99) -> Optional[Tuple[int, int]]:
+                        device: str = None) -> Optional[Tuple[int, int]]:
     """
-    Find if small image exists within large image using optimized template matching.
+    Find if small image exists within large image using GPU-accelerated pixel matching.
     Returns (x, y) coordinates if found, None otherwise.
     """
-    # Try GPU acceleration first if available
-    if torch.cuda.is_available():
+    # Auto-detect device if not specified
+    if device is None:
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    
+    # Convert to PyTorch tensors and move to GPU
+    small_tensor = torch.from_numpy(small_img).float().to(device) / 255.0
+    large_tensor = torch.from_numpy(large_img).float().to(device) / 255.0
+    
+    # Rearrange dimensions from HWC to CHW
+    small_tensor = small_tensor.permute(2, 0, 1)  # [C, H, W]
+    large_tensor = large_tensor.permute(2, 0, 1)  # [C, H, W]
+    
+    if device == 'cuda':
         try:
-            return find_image_in_larger_gpu(small_img, large_img, threshold)
+            return find_image_in_larger_gpu(small_tensor, large_tensor, device)
         except Exception as e:
             print(f"GPU matching failed, falling back to CPU: {e}")
+            # Move tensors back to CPU for fallback
+            small_tensor = small_tensor.cpu()
+            large_tensor = large_tensor.cpu()
     
-    # Fallback to CPU with early exit for high-threshold matches
-    if threshold >= 0.95:
-        return find_image_in_larger_early_exit(small_img, large_img, threshold)
+    # CPU fallback with same logic
+    small_h, small_w = small_tensor.shape[1], small_tensor.shape[2]
+    large_h, large_w = large_tensor.shape[1], large_tensor.shape[2]
     
-    # Original CPU implementation for lower thresholds
-    if small_img.shape[0] > large_img.shape[0] or small_img.shape[1] > large_img.shape[1]:
+    if small_h > large_h or small_w > large_w:
         return None
     
-    # Convert to grayscale for faster matching
-    if len(small_img.shape) == 3:
-        small_gray = np.mean(small_img, axis=2)
-        large_gray = np.mean(large_img, axis=2)
-    else:
-        small_gray = small_img
-        large_gray = large_img
-    
-    # Normalize to 0-1 range
-    small_gray = small_gray.astype(np.float32) / 255.0
-    large_gray = large_gray.astype(np.float32) / 255.0
-    
-    # Template matching using normalized cross-correlation
-    h, w = small_gray.shape
-    best_match = -1
-    best_pos = None
-    
-    for y in range(large_gray.shape[0] - h + 1):
-        for x in range(large_gray.shape[1] - w + 1):
-            # Extract patch from large image
-            patch = large_gray[y:y+h, x:x+w]
+    # Iterate through all possible positions in the large image
+    for start_y in range(large_h - small_h + 1):
+        for start_x in range(large_w - small_w + 1):
+            # Extract patch from large image at current position
+            patch = large_tensor[:, start_y:start_y+small_h, start_x:start_x+small_w]
             
-            # Calculate normalized cross-correlation
-            correlation = np.corrcoef(small_gray.flatten(), patch.flatten())[0, 1]
+            # Compare pixel by pixel with early exit
+            match = True
+            for y in range(small_h):
+                for x in range(small_w):
+                    for c in range(3):  # RGB channels
+                        if torch.abs(small_tensor[c, y, x] - patch[c, y, x]) > 0.02:  # Small tolerance for format differences
+                            match = False
+                            break
+                    if not match:
+                        break
+                if not match:
+                    break
             
-            if not np.isnan(correlation) and correlation > best_match:
-                best_match = correlation
-                best_pos = (x, y)
-    
-    if best_match > threshold:
-        return best_pos
+            if match:
+                return (start_x, start_y)
     
     return None
 
@@ -248,8 +160,10 @@ def check_image_containment(image_files: List[Path]) -> None:
     else:
         print(f"Using CPU processing")
     
-    # Load all images and sort by size
+    # Load all images to GPU memory once and sort by size
     images_data = []
+    print("Loading images to GPU memory...")
+    
     for img_path in image_files:
         try:
             with Image.open(img_path) as img:
@@ -258,7 +172,14 @@ def check_image_containment(image_files: List[Path]) -> None:
                     img = img.convert("RGB")
                 img_array = np.array(img)
                 size = img_array.shape[0] * img_array.shape[1]
-                images_data.append((img_path, img_array, size))
+                
+                # Convert to tensor and move to GPU immediately
+                img_tensor = torch.from_numpy(img_array).float().to(device) / 255.0
+                img_tensor = img_tensor.permute(2, 0, 1)  # CHW format
+                
+                images_data.append((img_path, img_tensor, size))
+                print(f"  Loaded {img_path.name} ({img_array.shape}) to {device}")
+                
         except Exception as e:
             print(f"Error loading {img_path.name}: {e}")
     
@@ -266,22 +187,60 @@ def check_image_containment(image_files: List[Path]) -> None:
     images_data.sort(key=lambda x: x[2], reverse=True)
     
     # Check each smaller image against larger ones
-    for i, (small_path, small_img, small_size) in enumerate(images_data[1:], 1):
-        for j, (large_path, large_img, large_size) in enumerate(images_data[:i]):
+    for i, (small_path, small_tensor, small_size) in enumerate(images_data[1:], 1):
+        for j, (large_path, large_tensor, large_size) in enumerate(images_data[:i]):
             print(f"Checking if {small_path.name} is in {large_path.name}...")
             
             # Skip comparison if images have the same dimensions (likely same image, different format)
-            if (small_img.shape[0] == large_img.shape[0] and 
-                small_img.shape[1] == large_img.shape[1]):
+            if (small_tensor.shape[1] == large_tensor.shape[1] and 
+                small_tensor.shape[2] == large_tensor.shape[2]):
                 print(f"  MATCH FOUND: {small_path.name} found in {large_path.name} at coordinates (0, 0) - same dimensions")
                 continue
             
-            match_pos = find_image_in_larger(small_img, large_img)
+            # Perform pixel-by-pixel matching on GPU
+            match_pos = find_image_in_larger_tensors(small_tensor, large_tensor, device)
             if match_pos:
                 x, y = match_pos
                 print(f"  MATCH FOUND: {small_path.name} found in {large_path.name} at coordinates ({x}, {y})")
             else:
                 print(f"  No match found")
+
+
+def find_image_in_larger_tensors(small_tensor: torch.Tensor, large_tensor: torch.Tensor, 
+                                device: str) -> Optional[Tuple[int, int]]:
+    """
+    Find if small tensor exists within large tensor using pixel-by-pixel matching.
+    Both tensors should already be on the GPU in CHW format.
+    """
+    small_h, small_w = small_tensor.shape[1], small_tensor.shape[2]
+    large_h, large_w = large_tensor.shape[1], large_tensor.shape[2]
+    
+    if small_h > large_h or small_w > large_w:
+        return None
+    
+    # Iterate through all possible positions in the large image
+    for start_y in range(large_h - small_h + 1):
+        for start_x in range(large_w - small_w + 1):
+            # Extract patch from large image at current position
+            patch = large_tensor[:, start_y:start_y+small_h, start_x:start_x+small_w]
+            
+            # Compare pixel by pixel with early exit
+            match = True
+            for y in range(small_h):
+                for x in range(small_w):
+                    for c in range(3):  # RGB channels
+                        if torch.abs(small_tensor[c, y, x] - patch[c, y, x]) > 0.02:  # Small tolerance for format differences
+                            match = False
+                            break
+                    if not match:
+                        break
+                if not match:
+                    break
+            
+            if match:
+                return (start_x, start_y)
+    
+    return None
 
 
 def main():
