@@ -44,8 +44,39 @@ def convert_image_to_png(image_path: Path, output_path: Path) -> None:
             img.save(output_file, format="PNG")
             print(f"Converted {image_path.name} -> {output_file.name}")
             
+            # Special handling for fulltree: create a 500x500 sub-image
+            if image_path.stem.lower() == "fulltree":
+                create_fulltree_subimage(img, output_path)
+            
     except Exception as e:
         print(f"Error processing {image_path.name}: {e}")
+
+
+def create_fulltree_subimage(img: Image.Image, output_path: Path) -> None:
+    """Create a 500x500 sub-image from fulltree at position (7722, 616)."""
+    try:
+        # Extract 500x500 region starting at (7722, 616)
+        x, y = 7722, 616
+        width, height = 500, 500
+        
+        # Check if the crop region is within image bounds
+        img_width, img_height = img.size
+        if x + width > img_width or y + height > img_height:
+            print(f"Warning: Crop region ({x}, {y}, {x+width}, {y+height}) exceeds image bounds ({img_width}, {img_height})")
+            # Adjust crop region to fit within bounds
+            width = min(width, img_width - x)
+            height = min(height, img_height - y)
+        
+        # Crop the sub-image
+        sub_img = img.crop((x, y, x + width, y + height))
+        
+        # Save as small.png with same format settings
+        small_output = output_path / "small.png"
+        sub_img.save(small_output, format="PNG")
+        print(f"Created sub-image: small.png ({width}x{height} from fulltree)")
+        
+    except Exception as e:
+        print(f"Error creating fulltree sub-image: {e}")
 
 
 def main():
