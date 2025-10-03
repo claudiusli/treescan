@@ -27,8 +27,13 @@ class StreamDS(IterableDataset):
             # Load the image data to prevent lazy loading
             img.load()
             
-            # Always convert to RGB to ensure consistent channel ordering
-            if img.mode != "RGB":
+            # Handle different image modes - convert to RGB for consistent channel ordering
+            if img.mode == "RGBA":
+                # Convert RGBA to RGB by compositing over white background
+                background = Image.new("RGB", img.size, (255, 255, 255))
+                background.paste(img, mask=img.split()[-1])  # Use alpha channel as mask
+                img = background
+            elif img.mode != "RGB":
                 img = img.convert("RGB")
             
             # Convert to numpy array
@@ -298,6 +303,41 @@ if __name__ == "__main__":
                 tensor = torch.tensor(img_array).permute(2, 0, 1).float()
                 return tensor.to(device)
         
+        def load_mixed_image_to_gpu(path, device):
+            # Disable decompression bomb protection
+            Image.MAX_IMAGE_PIXELS = None
+            
+            with Image.open(path) as img:
+                # Load the image data to prevent lazy loading
+                img.load()
+                
+                # Handle different image modes - convert to RGB for consistent channel ordering
+                if img.mode == "RGBA":
+                    # Convert RGBA to RGB by compositing over white background
+                    background = Image.new("RGB", img.size, (255, 255, 255))
+                    background.paste(img, mask=img.split()[-1])  # Use alpha channel as mask
+                    img = background
+                elif img.mode != "RGB":
+                    img = img.convert("RGB")
+                
+                # Convert to numpy array
+                img_array = np.array(img)
+                
+                # Normalize to 0-1 range based on the data type
+                if img_array.dtype == np.uint8:
+                    img_array = img_array.astype(np.float32) / 255.0
+                elif img_array.dtype == np.uint16:
+                    img_array = img_array.astype(np.float32) / 65535.0
+                else:
+                    # For other types, normalize to 0-1
+                    img_array = img_array.astype(np.float32)
+                    if img_array.max() > img_array.min():
+                        img_array = (img_array - img_array.min()) / (img_array.max() - img_array.min())
+                
+                # Convert to tensor and move to GPU
+                tensor = torch.tensor(img_array).permute(2, 0, 1).float()
+                return tensor.to(device)
+        
         mixed_img = load_mixed_image_to_gpu(args.mixed_file, device)
         _, height, width = mixed_img.shape
         
@@ -351,11 +391,16 @@ if __name__ == "__main__":
             print(f"Outputs: {outputs.cpu().numpy()}")
             print(f"Probabilities: OW: {probabilities[0][0].item():.4f}, TW: {probabilities[0][1].item():.4f}")
             
-            # Convert patch to displayable format
-            patch_np = patch.squeeze(0).cpu().permute(1, 2, 0).byte().numpy()
+            # Convert patch to displayable format - properly scale back to 0-255
+            patch_np = patch.squeeze(0).cpu().permute(1, 2, 0).numpy()
+            # Scale from normalized 0-1 back to 0-255 for display
+            patch_np = (patch_np * 255).astype(np.uint8)
             
-            # Print patch statistics
-            print(f"Patch stats - Min: {patch.min().item():.6f}, Max: {patch.max().item():.6f}, Mean: {patch.mean().item():.6f}")
+            # Debug: Check actual pixel values
+            print(f"Patch pixel range - Min: {patch_np.min()}, Max: {patch_np.max()}, Mean: {patch_np.mean():.2f}")
+            
+            # Print patch statistics (original normalized values)
+            print(f"Patch stats (normalized) - Min: {patch.min().item():.6f}, Max: {patch.max().item():.6f}, Mean: {patch.mean().item():.6f}")
             
             # Display the patch
             plt.figure(figsize=(6, 6))
