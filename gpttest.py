@@ -1,4 +1,7 @@
 import numpy as np
+import sys
+from pathlib import Path
+from PIL import Image
 
 def to_uint8_rgb(arr):
     """
@@ -113,3 +116,61 @@ def rabin_karp_2d_search(big, small):
             return (y, x)
 
     return None
+
+
+def load_image(image_path):
+    """Load image and convert to uint8 RGB format."""
+    # Disable decompression bomb protection for large images
+    Image.MAX_IMAGE_PIXELS = None
+    
+    with Image.open(image_path) as img:
+        # Load the image data to prevent lazy loading
+        img.load()
+        
+        # Ensure RGB format
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        
+        # Convert to numpy array
+        img_array = np.array(img, dtype=np.uint8)
+        return to_uint8_rgb(img_array)
+
+
+def main():
+    if len(sys.argv) != 3:
+        print("Usage: python gpttest.py <large_image> <small_image>")
+        sys.exit(1)
+    
+    large_path = Path(sys.argv[1])
+    small_path = Path(sys.argv[2])
+    
+    if not large_path.exists():
+        print(f"Error: Large image file {large_path} does not exist")
+        sys.exit(1)
+    
+    if not small_path.exists():
+        print(f"Error: Small image file {small_path} does not exist")
+        sys.exit(1)
+    
+    # Load images
+    print("Loading large image...")
+    big = load_image(large_path)
+    print(f"Large image shape: {big.shape}")
+    
+    print("Loading small image...")
+    small = load_image(small_path)
+    print(f"Small image shape: {small.shape}")
+    
+    # Search for subimage
+    print("Searching for subimage...")
+    result = rabin_karp_2d_search(big, small)
+    
+    if result:
+        y, x = result
+        print(f"{x},{y}")
+    else:
+        print("not a sub-image")
+
+
+if __name__ == "__main__":
+    main()
