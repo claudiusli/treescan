@@ -39,9 +39,9 @@ def convert_image_to_png(image_path: Path, output_path: Path) -> None:
             if img.mode != "RGB":
                 img = img.convert("RGB")
             
-            # Save as PNG with original dimensions
+            # Save as PNG with original dimensions and consistent settings
             output_file = output_path / f"{image_path.stem}.png"
-            img.save(output_file, format="PNG")
+            img.save(output_file, format="PNG", optimize=False, compress_level=0)
             print(f"Converted {image_path.name} -> {output_file.name}")
             
             # Special handling for fulltree: create a 500x500 sub-image
@@ -72,7 +72,7 @@ def create_fulltree_subimage(img: Image.Image, output_path: Path) -> None:
         
         # Save as small.png with same format settings
         small_output = output_path / "small.png"
-        sub_img.save(small_output, format="PNG")
+        sub_img.save(small_output, format="PNG", optimize=False, compress_level=0)
         print(f"Created sub-image: small.png ({width}x{height} from fulltree)")
         
     except Exception as e:
