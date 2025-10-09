@@ -6,6 +6,8 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
+import sys
+import time
 
 
 class StreamDS(IterableDataset):
@@ -250,20 +252,25 @@ if __name__ == "__main__":
         default="",
         help="Path to load pre-trained model weights (optional)",
     )
+    parser.add_argument(
+        "--checkpixels",
+        type=str,
+        help="Path to the mixed image file for continuous pixel checking (no display)"
+    )
 
     # Parse arguments
     args = parser.parse_args()
 
-    # Check if mixed_file mode is active
-    if args.mixed_file:
-        # In mixed_file mode, we don't need ow_file and tw_file
+    # Check if mixed_file or checkpixels mode is active
+    if args.mixed_file or args.checkpixels:
+        # In these modes, we don't need ow_file and tw_file
         if not args.in_model:
-            print("Error: --in_model must be provided when using --mixed_file")
+            print("Error: --in_model must be provided when using --mixed_file or --checkpixels")
             exit(1)
     else:
         # In normal mode, both ow_file and tw_file are required
         if not args.ow_file or not args.tw_file:
-            print("Error: --ow_file and --tw_file are required when not using --mixed_file")
+            print("Error: --ow_file and --tw_file are required when not using --mixed_file or --checkpixels")
             exit(1)
 
     # Check if GPU is available
@@ -416,6 +423,127 @@ if __name__ == "__main__":
             
             if user_input.lower() == 'q':
                 break
+        exit(0)
+
+    # Handle checkpixels mode
+    elif args.checkpixels:
+        # In checkpixels mode, we don't need ow_file and tw_file
+        if not args.in_model:
+            print("Error: --in_model must be provided when using --checkpixels")
+            exit(1)
+        
+        # Load the mixed image to GPU using the existing function
+        def load_mixed_image_to_gpu(path, device):
+            # Disable decompression bomb protection
+            Image.MAX_IMAGE_PIXELS = None
+            
+            with Image.open(path) as img:
+                # Load the image data to prevent lazy loading
+                img.load()
+                
+                # Handle different image modes - convert to RGB for consistent channel ordering
+                if img.mode == "RGBA":
+                    # Convert RGBA to RGB by compositing over white background
+                    background = Image.new("RGB", img.size, (255, 255, 255))
+                    background.paste(img, mask=img.split()[-1])  # Use alpha channel as mask
+                    img = background
+                elif img.mode != "RGB":
+                    img = img.convert("RGB")
+                
+                # Convert to numpy array
+                img_array = np.array(img)
+                
+                # Normalize to 0-1 range based on the data type
+                if img_array.dtype == np.uint8:
+                    img_array = img_array.astype(np.float32) / 255.0
+                elif img_array.dtype == np.uint16:
+                    img_array = img_array.astype(np.float32) / 65535.0
+                else:
+                    # For other types, normalize to 0-1
+                    img_array = img_array.astype(np.float32)
+                    if img_array.max() > img_array.min():
+                        img_array = (img_array - img_array.min()) / (img_array.max() - img_array.min())
+                
+                # Convert to tensor and move to GPU
+                tensor = torch.tensor(img_array).permute(2, 0, 1).float()
+                return tensor.to(device)
+        
+        mixed_img = load_mixed_image_to_gpu(args.checkpixels, device)
+        _, height, width = mixed_img.shape
+        
+        # Initialize the network
+        net = StainDiscriminator(args.window)
+        net.to(device)
+        
+        # Load pre-trained weights
+        if args.in_model:
+            if not os.path.exists(args.in_model):
+                raise FileNotFoundError(f"Model file not found: {args.in_model}")
+            
+            save_data = torch.load(args.in_model, map_location=device)
+            
+            if 'window_size' in save_data:
+                if save_data['window_size'] != args.window:
+                    print(f"Error: Window size mismatch! Model was trained with window size {save_data['window_size']}, "
+                          f"but current window size is {args.window}")
+                    exit(1)
+            else:
+                print("Warning: No window size information found in the model file. Proceeding anyway.")
+            
+            net.load_state_dict(save_data['model_state_dict'])
+            print(f"Loaded pre-trained weights from '{args.in_model}'")
+        
+        net.eval()
+        
+        # Calculate output image dimensions
+        output_width = width - args.window + 1
+        output_height = height - args.window + 1
+        
+        print(f"Processing {output_width}x{output_height} patches to create classification map...")
+        
+        # Create output image array (black for OW, white for TW)
+        output_array = np.zeros((output_height, output_width), dtype=np.uint8)
+        
+        # Process all patches systematically
+        total_patches = output_width * output_height
+        processed = 0
+        last_print_time = time.time()
+        print_interval = 1.0  # Print approximately once per second
+
+        for y in range(0, output_height):
+            for x in range(0, output_width):
+                # Extract patch directly from GPU tensor
+                patch = mixed_img[:, y:y + args.window, x:x + args.window].unsqueeze(0)
+                
+                # Classify
+                with torch.no_grad():
+                    outputs = net(patch)
+                    _, predicted = torch.max(outputs.data, 1)
+                    classification = predicted.item()  # 0 for OW, 1 for TW
+                
+                # Set pixel value: 0 (black) for OW, 255 (white) for TW
+                output_array[y, x] = 0 if classification == 0 else 255
+                
+                processed += 1
+                
+                # Print progress approximately once per second
+                current_time = time.time()
+                if current_time - last_print_time >= print_interval:
+                    print(f"Processed {processed}/{total_patches} patches ({x},{y})")
+                    last_print_time = current_time
+                
+                if processed % 1000 == 0:
+                    print(f"Processed {processed}/{total_patches} patches...", file=sys.stderr)
+        
+        # Save the output image
+        output_path = "classification_map.png"
+        output_img = Image.fromarray(output_array, mode='L')
+        output_img.save(output_path)
+        
+        print(f"Completed processing {processed} patches")
+        print(f"Classification map saved to '{output_path}'")
+        print(f"Output dimensions: {output_width}x{output_height} pixels")
+        print("Black pixels = OW classification, White pixels = TW classification")
         exit(0)
 
     # Create datasets using provided arguments
