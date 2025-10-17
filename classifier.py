@@ -536,10 +536,13 @@ if __name__ == "__main__":
         
         print(f"Creating classification map of {output_width}x{output_height} pixels...")
         
+        # Calculate total number of patches to process
+        total_patches = output_width * output_height
+        print(f"Total patches to process: {total_patches}")
+        
         # Create output image array
         output_array = np.zeros((output_height, output_width), dtype=np.uint8)
         
-        total_patches = 0
         processed_patches = 0
         last_print_time = time.time()
         
@@ -586,7 +589,8 @@ if __name__ == "__main__":
                     # Print progress
                     current_time = time.time()
                     if current_time - last_print_time >= 1.0:
-                        print(f"Processed {processed_patches} patches (tile {tile_idx + 1}/{len(tiles)})")
+                        progress_percent = (processed_patches / total_patches) * 100
+                        print(f"Processed {processed_patches}/{total_patches} patches ({progress_percent:.1f}%) - tile {tile_idx + 1}/{len(tiles)}")
                         last_print_time = current_time
             
             # Clear GPU memory
