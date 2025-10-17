@@ -152,6 +152,73 @@ def examine(loader):
     print("Note: Only examined first 5 batches to avoid consuming the entire iterator")
 
 
+class TileProcessor:
+    def __init__(self, image_path, tile_size=4096, halo=99, device='cuda'):
+        self.image_path = image_path
+        self.tile_size = tile_size
+        self.halo = halo
+        self.device = device
+        
+        # Get image dimensions without loading full image
+        Image.MAX_IMAGE_PIXELS = None
+        with Image.open(image_path) as img:
+            self.img_width, self.img_height = img.size
+            self.img_mode = img.mode
+    
+    def get_tile_info(self):
+        """Get list of tiles with their coordinates"""
+        tiles = []
+        for tile_y in range(0, self.img_height, self.tile_size):
+            for tile_x in range(0, self.img_width, self.tile_size):
+                # Calculate tile bounds with halo
+                x_start = max(0, tile_x - self.halo)
+                y_start = max(0, tile_y - self.halo)
+                x_end = min(self.img_width, tile_x + self.tile_size + self.halo)
+                y_end = min(self.img_height, tile_y + self.tile_size + self.halo)
+                
+                # Calculate the actual processing region (without halo)
+                proc_x_start = tile_x
+                proc_y_start = tile_y
+                proc_x_end = min(self.img_width, tile_x + self.tile_size)
+                proc_y_end = min(self.img_height, tile_y + self.tile_size)
+                
+                tiles.append({
+                    'load_bounds': (x_start, y_start, x_end, y_end),
+                    'proc_bounds': (proc_x_start, proc_y_start, proc_x_end, proc_y_end),
+                    'halo_offset': (tile_x - x_start, tile_y - y_start)
+                })
+        return tiles
+    
+    def load_tile(self, load_bounds):
+        """Load a single tile to GPU"""
+        x_start, y_start, x_end, y_end = load_bounds
+        
+        with Image.open(self.image_path) as img:
+            tile = img.crop((x_start, y_start, x_end, y_end))
+            
+            # Handle different image modes
+            if tile.mode == "RGBA":
+                background = Image.new("RGB", tile.size, (255, 255, 255))
+                background.paste(tile, mask=tile.split()[-1])
+                tile = background
+            elif tile.mode != "RGB":
+                tile = tile.convert("RGB")
+            
+            # Convert to tensor
+            img_array = np.array(tile)
+            if img_array.dtype == np.uint8:
+                img_array = img_array.astype(np.float32) / 255.0
+            elif img_array.dtype == np.uint16:
+                img_array = img_array.astype(np.float32) / 65535.0
+            else:
+                img_array = img_array.astype(np.float32)
+                if img_array.max() > img_array.min():
+                    img_array = (img_array - img_array.min()) / (img_array.max() - img_array.min())
+            
+            tensor = torch.tensor(img_array).permute(2, 0, 1).float()
+            return tensor.to(self.device)
+
+
 # Define a network optimized for color-based stain discrimination
 class StainDiscriminator(nn.Module):
     def __init__(self, window_size):
@@ -432,45 +499,6 @@ if __name__ == "__main__":
             print("Error: --in_model must be provided when using --checkpixels")
             exit(1)
         
-        # Load the mixed image to GPU using the existing function
-        def load_mixed_image_to_gpu(path, device):
-            # Disable decompression bomb protection
-            Image.MAX_IMAGE_PIXELS = None
-            
-            with Image.open(path) as img:
-                # Load the image data to prevent lazy loading
-                img.load()
-                
-                # Handle different image modes - convert to RGB for consistent channel ordering
-                if img.mode == "RGBA":
-                    # Convert RGBA to RGB by compositing over white background
-                    background = Image.new("RGB", img.size, (255, 255, 255))
-                    background.paste(img, mask=img.split()[-1])  # Use alpha channel as mask
-                    img = background
-                elif img.mode != "RGB":
-                    img = img.convert("RGB")
-                
-                # Convert to numpy array
-                img_array = np.array(img)
-                
-                # Normalize to 0-1 range based on the data type
-                if img_array.dtype == np.uint8:
-                    img_array = img_array.astype(np.float32) / 255.0
-                elif img_array.dtype == np.uint16:
-                    img_array = img_array.astype(np.float32) / 65535.0
-                else:
-                    # For other types, normalize to 0-1
-                    img_array = img_array.astype(np.float32)
-                    if img_array.max() > img_array.min():
-                        img_array = (img_array - img_array.min()) / (img_array.max() - img_array.min())
-                
-                # Convert to tensor and move to GPU
-                tensor = torch.tensor(img_array).permute(2, 0, 1).float()
-                return tensor.to(device)
-        
-        mixed_img = load_mixed_image_to_gpu(args.checkpixels, device)
-        _, height, width = mixed_img.shape
-        
         # Initialize the network
         net = StainDiscriminator(args.window)
         net.to(device)
@@ -495,55 +523,83 @@ if __name__ == "__main__":
         
         net.eval()
         
+        # Initialize tile processor
+        tile_processor = TileProcessor(args.checkpixels, device=device)
+        tiles = tile_processor.get_tile_info()
+        
+        print(f"Processing {len(tiles)} tiles of size {tile_processor.tile_size}x{tile_processor.tile_size} with {tile_processor.halo}px halo")
+        print(f"Total image size: {tile_processor.img_width}x{tile_processor.img_height}")
+        
         # Calculate output image dimensions
-        output_width = width - args.window + 1
-        output_height = height - args.window + 1
+        output_width = tile_processor.img_width - args.window + 1
+        output_height = tile_processor.img_height - args.window + 1
         
-        print(f"Processing {output_width}x{output_height} patches to create classification map...")
+        print(f"Creating classification map of {output_width}x{output_height} pixels...")
         
-        # Create output image array (black for OW, white for TW)
+        # Create output image array
         output_array = np.zeros((output_height, output_width), dtype=np.uint8)
         
-        # Process all patches systematically
-        total_patches = output_width * output_height
-        processed = 0
+        total_patches = 0
+        processed_patches = 0
         last_print_time = time.time()
-        print_interval = 1.0  # Print approximately once per second
-
-        for y in range(0, output_height):
-            for x in range(0, output_width):
-                # Extract patch directly from GPU tensor
-                patch = mixed_img[:, y:y + args.window, x:x + args.window].unsqueeze(0)
-                
-                # Classify
-                with torch.no_grad():
-                    outputs = net(patch)
-                    _, predicted = torch.max(outputs.data, 1)
-                    classification = predicted.item()  # 0 for OW, 1 for TW
-                
-                # Set pixel value: 0 (black) for OW, 255 (white) for TW
-                output_array[y, x] = 0 if classification == 0 else 255
-                
-                processed += 1
-                
-                # Print progress approximately once per second
-                current_time = time.time()
-                if current_time - last_print_time >= print_interval:
-                    print(f"Processed {processed}/{total_patches} patches ({x},{y})")
-                    last_print_time = current_time
-                
-                if processed % 1000 == 0:
-                    print(f"Processed {processed}/{total_patches} patches...", file=sys.stderr)
         
-        # Save the output image
+        for tile_idx, tile_info in enumerate(tiles):
+            print(f"Processing tile {tile_idx + 1}/{len(tiles)}")
+            
+            # Load tile
+            tile_tensor = tile_processor.load_tile(tile_info['load_bounds'])
+            _, tile_height, tile_width = tile_tensor.shape
+            
+            # Get processing bounds and halo offset
+            proc_x_start, proc_y_start, proc_x_end, proc_y_end = tile_info['proc_bounds']
+            halo_x, halo_y = tile_info['halo_offset']
+            
+            # Process patches in this tile
+            for global_y in range(proc_y_start, proc_y_end - args.window + 1):
+                for global_x in range(proc_x_start, proc_x_end - args.window + 1):
+                    # Convert to local tile coordinates
+                    local_x = global_x - proc_x_start + halo_x
+                    local_y = global_y - proc_y_start + halo_y
+                    
+                    # Skip if patch would go outside tile bounds
+                    if (local_x + args.window > tile_width or 
+                        local_y + args.window > tile_height):
+                        continue
+                    
+                    # Extract patch
+                    patch = tile_tensor[:, local_y:local_y + args.window, 
+                                     local_x:local_x + args.window].unsqueeze(0)
+                    
+                    # Classify
+                    with torch.no_grad():
+                        outputs = net(patch)
+                        _, predicted = torch.max(outputs.data, 1)
+                        classification = predicted.item()
+                    
+                    # Set pixel in output array
+                    output_y = global_y
+                    output_x = global_x
+                    output_array[output_y, output_x] = 0 if classification == 0 else 255
+                    
+                    processed_patches += 1
+                    
+                    # Print progress
+                    current_time = time.time()
+                    if current_time - last_print_time >= 1.0:
+                        print(f"Processed {processed_patches} patches (tile {tile_idx + 1}/{len(tiles)})")
+                        last_print_time = current_time
+            
+            # Clear GPU memory
+            del tile_tensor
+            torch.cuda.empty_cache()
+        
+        # Save output
         output_path = "classification_map.png"
         output_img = Image.fromarray(output_array, mode='L')
         output_img.save(output_path)
         
-        print(f"Completed processing {processed} patches")
+        print(f"Completed processing {processed_patches} patches")
         print(f"Classification map saved to '{output_path}'")
-        print(f"Output dimensions: {output_width}x{output_height} pixels")
-        print("Black pixels = OW classification, White pixels = TW classification")
         exit(0)
 
     # Create datasets using provided arguments
