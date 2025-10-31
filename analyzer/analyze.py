@@ -10,6 +10,9 @@ from PIL import Image
 def normalize_image(image_path):
     """Convert an image to PPM P6 format maintaining original color depth"""
     try:
+        # Disable decompression bomb protection for large images
+        Image.MAX_IMAGE_PIXELS = None
+        
         # Open the image
         with Image.open(image_path) as img:
             # Convert to RGB if not already (PPM P6 requires RGB)
