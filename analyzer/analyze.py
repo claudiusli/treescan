@@ -145,6 +145,40 @@ class StainDiscriminator(nn.Module):
         x = self.classifier(x)
         return x
 
+def create_model(window_size, device):
+    """Create a new StainDiscriminator model"""
+    model = StainDiscriminator(window_size).to(device)
+    return model
+
+def load_model(model_path, device):
+    """Load an existing model from file"""
+    if not Path(model_path).exists():
+        raise ValueError(f"Model file does not exist: {model_path}")
+    
+    checkpoint = torch.load(model_path, map_location=device)
+    window_size = checkpoint['window_size']
+    colors = checkpoint['colors']
+    metadata = checkpoint.get('metadata', {'training_history': []})
+    
+    model = create_model(window_size, device)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    
+    return model, window_size, colors, metadata
+
+def save_model(model, model_path, window_size, colors, metadata):
+    """Save model to file with metadata"""
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'window_size': window_size,
+        'colors': colors,
+        'metadata': metadata
+    }, model_path)
+
+def get_device():
+    """Get the appropriate device (CUDA or CPU)"""
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    return device
+
 def train_model(json_str, model_path=None):
     """Train a neural network on samples in the specified directory"""
     try:
@@ -183,19 +217,20 @@ def train_model(json_str, model_path=None):
         print(f"Training on colors: {colors}")
         
         # Set up device
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        device = get_device()
         print(f"Using device: {device}")
         
         # Create or load model
         if model_path and Path(model_path).exists():
             print(f"Loading existing model from {model_path}")
-            checkpoint = torch.load(model_path, map_location=device)
-            model = StainDiscriminator(window_size).to(device)
-            model.load_state_dict(checkpoint['model_state_dict'])
-            metadata = checkpoint.get('metadata', {'training_history': []})
+            model, loaded_window_size, loaded_colors, metadata = load_model(model_path, device)
+            
+            # Verify window size matches
+            if loaded_window_size != window_size:
+                raise ValueError(f"Model window size ({loaded_window_size}) doesn't match requested size ({window_size})")
         else:
             print(f"Creating new model with window size {window_size}")
-            model = StainDiscriminator(window_size).to(device)
+            model = create_model(window_size, device)
             metadata = {'training_history': []}
         
         # Set up training
@@ -272,7 +307,7 @@ def train_model(json_str, model_path=None):
         
         # Save model
         model_filename = f"{window_size}.model"
-        model_path = samples_dir / model_filename
+        model_save_path = samples_dir / model_filename
         
         # Update metadata
         training_entry = {
@@ -286,14 +321,9 @@ def train_model(json_str, model_path=None):
         metadata['training_history'].append(training_entry)
         
         # Save model with metadata
-        torch.save({
-            'model_state_dict': model.state_dict(),
-            'window_size': window_size,
-            'colors': colors,
-            'metadata': metadata
-        }, model_path)
+        save_model(model, model_save_path, window_size, colors, metadata)
         
-        print(f"Training completed. Model saved to: {model_path}")
+        print(f"Training completed. Model saved to: {model_save_path}")
         print(f"Final loss: {loss.item():.4f}")
         
     except json.JSONDecodeError as e:
