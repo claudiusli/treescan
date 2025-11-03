@@ -47,11 +47,21 @@ def makesample(json_str):
     """Create a sample subimage from the specified coordinates"""
     try:
         # Parse JSON input
-        params = json.loads(json_str)
+        try:
+            params = json.loads(json_str)
+        except json.JSONDecodeError as e:
+            print(f"Error parsing JSON: {e}")
+            print("Expected format: --makesample '{\"image\":\"<string>\",\"x\":<integer>,\"y\":<integer>,\"w\":<integer>,\"h\":<integer>,\"color\":\"<string>\"}'")
+            print("Example: --makesample '{\"image\":\"test.ppm\",\"x\":10,\"y\":20,\"w\":50,\"h\":50,\"color\":\"blue\"}'")
+            sys.exit(1)
+        
         required_keys = ['image', 'x', 'y', 'w', 'h', 'color']
-        for key in required_keys:
-            if key not in params:
-                raise ValueError(f"Missing required parameter: {key}")
+        missing_keys = [key for key in required_keys if key not in params]
+        if missing_keys:
+            print(f"Missing required parameters: {missing_keys}")
+            print("Expected format: --makesample '{\"image\":\"<string>\",\"x\":<integer>,\"y\":<integer>,\"w\":<integer>,\"h\":<integer>,\"color\":\"<string>\"}'")
+            print("Example: --makesample '{\"image\":\"test.ppm\",\"x\":10,\"y\":20,\"w\":50,\"h\":50,\"color\":\"blue\"}'")
+            sys.exit(1)
         
         image_path = params['image']
         x, y, w, h = params['x'], params['y'], params['w'], params['h']
@@ -93,9 +103,6 @@ def makesample(json_str):
                 raise ValueError(f"Cannot read image file: {image_path}")
             raise
             
-    except json.JSONDecodeError as e:
-        print(f"Error parsing JSON: {e}")
-        sys.exit(1)
     except Exception as e:
         print(f"Error creating sample: {e}")
         sys.exit(1)
@@ -183,11 +190,21 @@ def train_model(json_str, model_path=None):
     """Train a neural network on samples in the specified directory"""
     try:
         # Parse JSON input
-        params = json.loads(json_str)
+        try:
+            params = json.loads(json_str)
+        except json.JSONDecodeError as e:
+            print(f"Error parsing JSON: {e}")
+            print("Expected format: --train '{\"samples\":\"<string>\",\"window\":<integer>,\"traincount\":<integer>}'")
+            print("Example: --train '{\"samples\":\"test.samples\",\"window\":50,\"traincount\":1000}'")
+            sys.exit(1)
+        
         required_keys = ['samples', 'window', 'traincount']
-        for key in required_keys:
-            if key not in params:
-                raise ValueError(f"Missing required parameter: {key}")
+        missing_keys = [key for key in required_keys if key not in params]
+        if missing_keys:
+            print(f"Missing required parameters: {missing_keys}")
+            print("Expected format: --train '{\"samples\":\"<string>\",\"window\":<integer>,\"traincount\":<integer>}'")
+            print("Example: --train '{\"samples\":\"test.samples\",\"window\":50,\"traincount\":1000}'")
+            sys.exit(1)
         
         samples_dir = Path(params['samples'])
         window_size = params['window']
@@ -326,11 +343,70 @@ def train_model(json_str, model_path=None):
         print(f"Training completed. Model saved to: {model_save_path}")
         print(f"Final loss: {loss.item():.4f}")
         
-    except json.JSONDecodeError as e:
-        print(f"Error parsing JSON: {e}")
-        sys.exit(1)
     except Exception as e:
         print(f"Error during training: {e}")
+        sys.exit(1)
+
+def test_model(json_str, model_path):
+    """Test a neural network model on samples"""
+    if not model_path:
+        print("Error: --model parameter is required for --test")
+        print("Usage: --test '{\"samples\":\"<string>\",\"window\":<integer>,\"testcount\":<integer>}' --model <model_file>")
+        sys.exit(1)
+    
+    try:
+        # Parse JSON input
+        try:
+            params = json.loads(json_str)
+        except json.JSONDecodeError as e:
+            print(f"Error parsing JSON: {e}")
+            print("Expected format: --test '{\"samples\":\"<string>\",\"window\":<integer>,\"testcount\":<integer>}'")
+            print("Example: --test '{\"samples\":\"test.samples\",\"window\":50,\"testcount\":100}'")
+            sys.exit(1)
+        
+        required_keys = ['samples', 'window', 'testcount']
+        missing_keys = [key for key in required_keys if key not in params]
+        if missing_keys:
+            print(f"Missing required parameters: {missing_keys}")
+            print("Expected format: --test '{\"samples\":\"<string>\",\"window\":<integer>,\"testcount\":<integer>}'")
+            print("Example: --test '{\"samples\":\"test.samples\",\"window\":50,\"testcount\":100}'")
+            sys.exit(1)
+        
+        print("Test functionality not yet implemented")
+        # TODO: Implement test functionality
+        
+    except Exception as e:
+        print(f"Error during testing: {e}")
+        sys.exit(1)
+
+def makemask(json_str, model_path):
+    """Create a mask bitmap using the neural network model"""
+    if not model_path:
+        print("Error: --model parameter is required for --makemask")
+        print("Usage: --makemask '{\"image\":\"<string>\"}' --model <model_file>")
+        sys.exit(1)
+    
+    try:
+        # Parse JSON input
+        try:
+            params = json.loads(json_str)
+        except json.JSONDecodeError as e:
+            print(f"Error parsing JSON: {e}")
+            print("Expected format: --makemask '{\"image\":\"<string>\"}'")
+            print("Example: --makemask '{\"image\":\"test.ppm\"}'")
+            sys.exit(1)
+        
+        if 'image' not in params:
+            print("Missing required parameter: image")
+            print("Expected format: --makemask '{\"image\":\"<string>\"}'")
+            print("Example: --makemask '{\"image\":\"test.ppm\"}'")
+            sys.exit(1)
+        
+        print("Makemask functionality not yet implemented")
+        # TODO: Implement makemask functionality
+        
+    except Exception as e:
+        print(f"Error creating mask: {e}")
         sys.exit(1)
 
 def run_unit_tests():
@@ -519,13 +595,15 @@ def main():
     parser.add_argument('--normalize', type=str, help='Normalize image to PPM P6 format')
     parser.add_argument('--makesample', type=str, help='Create sample subimage from JSON parameters')
     parser.add_argument('--train', type=str, help='Train neural network on samples from JSON parameters')
+    parser.add_argument('--test', type=str, help='Test neural network model on samples from JSON parameters')
+    parser.add_argument('--makemask', type=str, help='Create mask bitmap from JSON parameters')
     parser.add_argument('--model', type=str, help='Path to existing model file to load/modify')
-    parser.add_argument('--test', action='store_true', help='Run unit tests')
+    parser.add_argument('--unittest', action='store_true', help='Run unit tests')
     
     args = parser.parse_args()
     
     try:
-        if args.test:
+        if args.unittest:
             run_unit_tests()
         elif args.normalize:
             normalize_image(args.normalize)
@@ -533,8 +611,30 @@ def main():
             makesample(args.makesample)
         elif args.train:
             train_model(args.train, args.model)
+        elif args.test:
+            test_model(args.test, args.model)
+        elif args.makemask:
+            makemask(args.makemask, args.model)
         else:
-            parser.print_help()
+            print("Analyzer - Image analysis tools")
+            print("\nUsage examples:")
+            print("  --normalize <image_file>")
+            print("    Example: --normalize 'image.jpg'")
+            print()
+            print("  --makesample '{\"image\":\"<string>\",\"x\":<int>,\"y\":<int>,\"w\":<int>,\"h\":<int>,\"color\":\"<string>\"}'")
+            print("    Example: --makesample '{\"image\":\"test.ppm\",\"x\":10,\"y\":20,\"w\":50,\"h\":50,\"color\":\"blue\"}'")
+            print()
+            print("  --train '{\"samples\":\"<string>\",\"window\":<int>,\"traincount\":<int>}' [--model <model_file>]")
+            print("    Example: --train '{\"samples\":\"test.samples\",\"window\":50,\"traincount\":1000}'")
+            print()
+            print("  --test '{\"samples\":\"<string>\",\"window\":<int>,\"testcount\":<int>}' --model <model_file>")
+            print("    Example: --test '{\"samples\":\"test.samples\",\"window\":50,\"testcount\":100}' --model 50.model")
+            print()
+            print("  --makemask '{\"image\":\"<string>\"}' --model <model_file>")
+            print("    Example: --makemask '{\"image\":\"test.ppm\"}' --model 50.model")
+            print()
+            print("  --unittest")
+            print("    Run unit tests")
             
     except Exception as e:
         print(f"Error: {e}")
