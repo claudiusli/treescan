@@ -21,7 +21,7 @@ Analyzer has several modes:
 --sampleselector
 	takes a single string as an argument and interprets it as a ppm image
 	displays that image on the screen (it may be large so disable decompression bomb protection)
-	the user is then allowed to drag a selection box around any location on the screen. when they do so, a small popup appears with a space to enter a string, a cancel button and an OK button. The OK button is greyed out and inaccessible until some string is entered in the box. When the OK button is pressed a snippet is created from the selection box and it is saved as though makesample had been called with those parameters. Whether the user presses OK or cancel the program then continues and waits for the user to draw a new selection box. If the user closes the window, the program should exit.
+	the user is then allowed to drag a selection box around any location on the screen. when they do so, a small popup appears with a space to enter a string, a cancel button and an OK button. The OK button is greyed out and inaccessible until some string is entered in the box. When the OK button is pressed a snippet is created from the selection box and it is saved as though makesample had been called with those parameters. Whether the user presses OK or cancel the program then continues and waits for the user to draw a new selection box. If the user closes the window, the program should exit. the window should have scroll bars if it is too big to fit on the screen and the mouse wheel should zoom in and out while ctrl is pressed. if the mouse wheel is turned on its own, it should scroll up and down, if the mouse wheel is turned with alt pressed, it should scroll right and left. 
 
 --train
 	takes a json object of the form:

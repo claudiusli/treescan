@@ -1,599 +1,52 @@
 #!/usr/bin/env python3
 
 import argparse
-import json
 import sys
 import os
-from pathlib import Path
-from PIL import Image
-import unittest
-import tempfile
-import shutil
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import torchvision.transforms as transforms
-import random
-import time
-import yaml
-from datetime import datetime
 
-def normalize_image(image_path):
-    """Convert an image to PPM P6 format maintaining original color depth"""
-    try:
-        # Disable decompression bomb protection for large images
-        Image.MAX_IMAGE_PIXELS = None
-        
-        # Open the image
-        with Image.open(image_path) as img:
-            # Convert to RGB if not already (PPM P6 requires RGB)
-            if img.mode != 'RGB':
-                img = img.convert('RGB')
-            
-            # Create output path with .ppm extension
-            input_path = Path(image_path)
-            output_path = input_path.parent / (input_path.stem + '.ppm')
-            
-            # Save as PPM P6 format
-            img.save(output_path, format='PPM')
-            
-            print(f"Normalized image saved to: {output_path}")
-            
-    except Exception as e:
-        print(f"Error normalizing image: {e}")
-        sys.exit(1)
+# Add the parent directory to sys.path to allow absolute imports
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
 
-def makesample(json_str):
-    """Create a sample subimage from the specified coordinates"""
-    try:
-        # Parse JSON input
-        try:
-            params = json.loads(json_str)
-        except json.JSONDecodeError as e:
-            print(f"Error parsing JSON: {e}")
-            print("Expected format: --makesample '{\"image\":\"<string>\",\"x\":<integer>,\"y\":<integer>,\"w\":<integer>,\"h\":<integer>,\"color\":\"<string>\"}'")
-            print("Example: --makesample '{\"image\":\"test.ppm\",\"x\":10,\"y\":20,\"w\":50,\"h\":50,\"color\":\"blue\"}'")
-            sys.exit(1)
-        
-        required_keys = ['image', 'x', 'y', 'w', 'h', 'color']
-        missing_keys = [key for key in required_keys if key not in params]
-        if missing_keys:
-            print(f"Missing required parameters: {missing_keys}")
-            print("Expected format: --makesample '{\"image\":\"<string>\",\"x\":<integer>,\"y\":<integer>,\"w\":<integer>,\"h\":<integer>,\"color\":\"<string>\"}'")
-            print("Example: --makesample '{\"image\":\"test.ppm\",\"x\":10,\"y\":20,\"w\":50,\"h\":50,\"color\":\"blue\"}'")
-            sys.exit(1)
-        
-        image_path = params['image']
-        x, y, w, h = params['x'], params['y'], params['w'], params['h']
-        color = params['color']
-        
-        # Disable decompression bomb protection for large images
-        Image.MAX_IMAGE_PIXELS = None
-        
-        # Open the image - must be PPM or throw error
-        try:
-            with Image.open(image_path) as img:
-                # Check if it's a PPM file
-                if img.format != 'PPM':
-                    raise ValueError(f"Image must be in PPM format, got {img.format}")
-                
-                # Validate coordinates
-                if x < 0 or y < 0 or x + w > img.width or y + h > img.height:
-                    raise ValueError(f"Sample coordinates ({x}, {y}, {w}, {h}) exceed image bounds ({img.width}, {img.height})")
-                
-                # Create samples directory
-                input_path = Path(image_path)
-                samples_dir = input_path.parent / (input_path.stem + '.samples')
-                samples_dir.mkdir(exist_ok=True)
-                
-                # Extract subimage
-                subimage = img.crop((x, y, x + w, y + h))
-                
-                # Create output filename: <x>_<y>_<w>_<h>.<color>
-                sample_filename = f"{x}_{y}_{w}_{h}.{color}"
-                sample_path = samples_dir / sample_filename
-                
-                # Save as PPM maintaining same color depth
-                subimage.save(sample_path, format='PPM')
-                
-                print(f"Sample saved to: {sample_path}")
-                
-        except Exception as e:
-            if "cannot identify image file" in str(e).lower():
-                raise ValueError(f"Cannot read image file: {image_path}")
-            raise
-            
-    except Exception as e:
-        print(f"Error creating sample: {e}")
-        sys.exit(1)
+from analyzer.image_operations import normalize_image, makesample
+from analyzer.model_operations import train_model, test_model, makemask
+from analyzer.ui_operations import sampleselector
+from analyzer.testing import run_unit_tests
 
-class StainDiscriminator(nn.Module):
-    def __init__(self, window_size):
-        super(StainDiscriminator, self).__init__()
-        
-        # Focus on color channel relationships - use 1x1 convolutions to learn color combinations
-        self.color_attention = nn.Sequential(
-            nn.Conv2d(3, 16, 1),  # 1x1 conv to learn color relationships
-            nn.ReLU(),
-            nn.Conv2d(16, 3, 1),  # Project back to 3 channels
-            nn.Sigmoid(),  # Attention weights for color channels
-        )
-        
-        # Spatial feature extraction
-        self.features = nn.Sequential(
-            nn.Conv2d(3, 32, 3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-            nn.Conv2d(32, 64, 3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-        )
-        
-        # Calculate the size after convolutions
-        feature_size = 64 * (window_size // 4) * (window_size // 4)
-        
-        self.classifier = nn.Sequential(
-            nn.Linear(feature_size, 128),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(128, 2)  # Binary classification
-        )
-        
-    def forward(self, x):
-        # Apply color attention
-        attention = self.color_attention(x)
-        x = x * attention
-        
-        # Extract features
-        x = self.features(x)
-        x = x.view(x.size(0), -1)
-        
-        # Classify
-        x = self.classifier(x)
-        return x
 
-def create_model(window_size, device):
-    """Create a new StainDiscriminator model"""
-    model = StainDiscriminator(window_size).to(device)
-    return model
-
-def load_model(model_path, device):
-    """Load an existing model from file"""
-    if not Path(model_path).exists():
-        raise ValueError(f"Model file does not exist: {model_path}")
-    
-    checkpoint = torch.load(model_path, map_location=device)
-    window_size = checkpoint['window_size']
-    colors = checkpoint['colors']
-    metadata = checkpoint.get('metadata', {'training_history': []})
-    
-    model = create_model(window_size, device)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    
-    return model, window_size, colors, metadata
-
-def save_model(model, model_path, window_size, colors, metadata):
-    """Save model to file with metadata"""
-    torch.save({
-        'model_state_dict': model.state_dict(),
-        'window_size': window_size,
-        'colors': colors,
-        'metadata': metadata
-    }, model_path)
-
-def get_device():
-    """Get the appropriate device (CUDA or CPU)"""
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    return device
-
-def train_model(json_str, model_path=None):
-    """Train a neural network on samples in the specified directory"""
-    try:
-        # Parse JSON input
-        try:
-            params = json.loads(json_str)
-        except json.JSONDecodeError as e:
-            print(f"Error parsing JSON: {e}")
-            print("Expected format: --train '{\"samples\":\"<string>\",\"window\":<integer>,\"traincount\":<integer>}'")
-            print("Example: --train '{\"samples\":\"test.samples\",\"window\":50,\"traincount\":1000}'")
-            sys.exit(1)
-        
-        required_keys = ['samples', 'window', 'traincount']
-        missing_keys = [key for key in required_keys if key not in params]
-        if missing_keys:
-            print(f"Missing required parameters: {missing_keys}")
-            print("Expected format: --train '{\"samples\":\"<string>\",\"window\":<integer>,\"traincount\":<integer>}'")
-            print("Example: --train '{\"samples\":\"test.samples\",\"window\":50,\"traincount\":1000}'")
-            sys.exit(1)
-        
-        samples_dir = Path(params['samples'])
-        window_size = params['window']
-        train_count = params['traincount']
-        
-        if not samples_dir.exists():
-            raise ValueError(f"Samples directory does not exist: {samples_dir}")
-        
-        # Get all sample files (ignore .model files)
-        sample_files = [f for f in samples_dir.glob('*.*') if not f.name.endswith('.model')]
-        
-        if len(sample_files) == 0:
-            raise ValueError(f"No sample files found in {samples_dir}")
-        
-        # Extract colors from filenames and group files by color
-        color_files = {}
-        for file_path in sample_files:
-            color = file_path.suffix[1:]  # Remove the dot
-            if color not in color_files:
-                color_files[color] = []
-            color_files[color].append(file_path)
-        
-        if len(color_files) != 2:
-            raise ValueError(f"Expected exactly 2 colors, found {len(color_files)}: {list(color_files.keys())}")
-        
-        colors = sorted(color_files.keys())  # Sort for consistency
-        print(f"Training on colors: {colors}")
-        
-        # Set up device
-        device = get_device()
-        print(f"Using device: {device}")
-        
-        # Create or load model
-        if model_path and Path(model_path).exists():
-            print(f"Loading existing model from {model_path}")
-            model, loaded_window_size, loaded_colors, metadata = load_model(model_path, device)
-            
-            # Verify window size matches
-            if loaded_window_size != window_size:
-                raise ValueError(f"Model window size ({loaded_window_size}) doesn't match requested size ({window_size})")
-        else:
-            print(f"Creating new model with window size {window_size}")
-            model = create_model(window_size, device)
-            metadata = {'training_history': []}
-        
-        # Set up training
-        criterion = nn.CrossEntropyLoss()
-        optimizer = optim.Adam(model.parameters(), lr=0.001)
-        
-        model.train()
-        
-        # Training loop
-        print(f"Starting training for {train_count} iterations...")
-        start_time = time.time()
-        last_print_time = start_time
-        
-        for iteration in range(train_count):
-            # Randomly select one file from each color
-            batch_images = []
-            batch_labels = []
-            
-            for color_idx, color in enumerate(colors):
-                # Randomly select a file of this color
-                file_path = random.choice(color_files[color])
-                
-                # Load image
-                with Image.open(file_path) as img:
-                    if img.mode != 'RGB':
-                        img = img.convert('RGB')
-                    
-                    # Get image dimensions
-                    img_width, img_height = img.size
-                    
-                    # Ensure we can extract a full window
-                    if img_width < window_size or img_height < window_size:
-                        continue
-                    
-                    # Randomly select a window position
-                    max_x = img_width - window_size
-                    max_y = img_height - window_size
-                    x = random.randint(0, max_x)
-                    y = random.randint(0, max_y)
-                    
-                    # Extract window
-                    window = img.crop((x, y, x + window_size, y + window_size))
-                    
-                    # Convert to tensor
-                    transform = transforms.Compose([
-                        transforms.ToTensor(),
-                    ])
-                    
-                    tensor = transform(window)
-                    batch_images.append(tensor)
-                    batch_labels.append(color_idx)
-            
-            if len(batch_images) == 0:
-                continue
-            
-            # Create batch
-            batch_images = torch.stack(batch_images).to(device)
-            batch_labels = torch.tensor(batch_labels, dtype=torch.long).to(device)
-            
-            # Forward pass
-            optimizer.zero_grad()
-            outputs = model(batch_images)
-            loss = criterion(outputs, batch_labels)
-            
-            # Backward pass
-            loss.backward()
-            optimizer.step()
-            
-            # Print loss approximately once per second
-            current_time = time.time()
-            if current_time - last_print_time >= 1.0:
-                print(f"Iteration {iteration + 1}/{train_count}, Loss: {loss.item():.4f}")
-                last_print_time = current_time
-        
-        # Save model
-        model_filename = f"{window_size}.model"
-        model_save_path = samples_dir / model_filename
-        
-        # Update metadata
-        training_entry = {
-            'timestamp': datetime.now().isoformat(),
-            'traincount': train_count,
-            'window_size': window_size,
-            'colors': colors,
-            'sample_files': [str(f) for f in sample_files],
-            'final_loss': loss.item()
-        }
-        metadata['training_history'].append(training_entry)
-        
-        # Save model with metadata
-        save_model(model, model_save_path, window_size, colors, metadata)
-        
-        print(f"Training completed. Model saved to: {model_save_path}")
-        print(f"Final loss: {loss.item():.4f}")
-        
-    except Exception as e:
-        print(f"Error during training: {e}")
-        sys.exit(1)
-
-def test_model(json_str, model_path):
-    """Test a neural network model on samples"""
-    if not model_path:
-        print("Error: --model parameter is required for --test")
-        print("Usage: --test '{\"samples\":\"<string>\",\"window\":<integer>,\"testcount\":<integer>}' --model <model_file>")
-        sys.exit(1)
-    
-    try:
-        # Parse JSON input
-        try:
-            params = json.loads(json_str)
-        except json.JSONDecodeError as e:
-            print(f"Error parsing JSON: {e}")
-            print("Expected format: --test '{\"samples\":\"<string>\",\"window\":<integer>,\"testcount\":<integer>}'")
-            print("Example: --test '{\"samples\":\"test.samples\",\"window\":50,\"testcount\":100}'")
-            sys.exit(1)
-        
-        required_keys = ['samples', 'window', 'testcount']
-        missing_keys = [key for key in required_keys if key not in params]
-        if missing_keys:
-            print(f"Missing required parameters: {missing_keys}")
-            print("Expected format: --test '{\"samples\":\"<string>\",\"window\":<integer>,\"testcount\":<integer>}'")
-            print("Example: --test '{\"samples\":\"test.samples\",\"window\":50,\"testcount\":100}'")
-            sys.exit(1)
-        
-        print("Test functionality not yet implemented")
-        # TODO: Implement test functionality
-        
-    except Exception as e:
-        print(f"Error during testing: {e}")
-        sys.exit(1)
-
-def makemask(json_str, model_path):
-    """Create a mask bitmap using the neural network model"""
-    if not model_path:
-        print("Error: --model parameter is required for --makemask")
-        print("Usage: --makemask '{\"image\":\"<string>\"}' --model <model_file>")
-        sys.exit(1)
-    
-    try:
-        # Parse JSON input
-        try:
-            params = json.loads(json_str)
-        except json.JSONDecodeError as e:
-            print(f"Error parsing JSON: {e}")
-            print("Expected format: --makemask '{\"image\":\"<string>\"}'")
-            print("Example: --makemask '{\"image\":\"test.ppm\"}'")
-            sys.exit(1)
-        
-        if 'image' not in params:
-            print("Missing required parameter: image")
-            print("Expected format: --makemask '{\"image\":\"<string>\"}'")
-            print("Example: --makemask '{\"image\":\"test.ppm\"}'")
-            sys.exit(1)
-        
-        print("Makemask functionality not yet implemented")
-        # TODO: Implement makemask functionality
-        
-    except Exception as e:
-        print(f"Error creating mask: {e}")
-        sys.exit(1)
-
-def run_unit_tests():
-    """Run unit tests to verify all functionality works"""
-    
-    class TestAnalyzer(unittest.TestCase):
-        
-        def setUp(self):
-            """Set up test fixtures"""
-            self.test_dir = Path(tempfile.mkdtemp())
-            
-            # Create a small test image (10x10 RGB)
-            self.test_image = Image.new('RGB', (10, 10), color='red')
-            self.test_image_path = self.test_dir / 'test_image.jpg'
-            self.test_image.save(self.test_image_path)
-            
-        def tearDown(self):
-            """Clean up test fixtures"""
-            shutil.rmtree(self.test_dir)
-            
-        def test_normalize_image(self):
-            """Test that normalize_image creates proper PPM file"""
-            # Test the normalize function
-            normalize_image(str(self.test_image_path))
-            
-            # Check that PPM file was created
-            expected_ppm = self.test_dir / 'test_image.ppm'
-            self.assertTrue(expected_ppm.exists(), "PPM file should be created")
-            
-            # Verify it's a valid PPM file
-            with Image.open(expected_ppm) as ppm_img:
-                self.assertEqual(ppm_img.format, 'PPM', "Should be PPM format")
-                self.assertEqual(ppm_img.mode, 'RGB', "Should be RGB mode")
-                self.assertEqual(ppm_img.size, (10, 10), "Should maintain original size")
-                
-        def test_normalize_different_formats(self):
-            """Test normalize with different input formats"""
-            # Test with PNG
-            png_path = self.test_dir / 'test.png'
-            self.test_image.save(png_path, 'PNG')
-            normalize_image(str(png_path))
-            
-            expected_ppm = self.test_dir / 'test.ppm'
-            self.assertTrue(expected_ppm.exists())
-            
-        def test_normalize_nonexistent_file(self):
-            """Test normalize with nonexistent file"""
-            with self.assertRaises(SystemExit):
-                normalize_image(str(self.test_dir / 'nonexistent.jpg'))
-                
-        def test_normalize_grayscale_conversion(self):
-            """Test that grayscale images are converted to RGB"""
-            # Create grayscale image
-            gray_img = Image.new('L', (5, 5), color=128)
-            gray_path = self.test_dir / 'gray.jpg'
-            gray_img.save(gray_path)
-            
-            normalize_image(str(gray_path))
-            
-            ppm_path = self.test_dir / 'gray.ppm'
-            with Image.open(ppm_path) as ppm_img:
-                self.assertEqual(ppm_img.mode, 'RGB', "Grayscale should be converted to RGB")
-                
-        def test_makesample_valid_input(self):
-            """Test makesample with valid input"""
-            # First create a PPM file
-            ppm_path = self.test_dir / 'test.ppm'
-            self.test_image.save(ppm_path, format='PPM')
-            
-            # Test makesample
-            json_input = json.dumps({
-                "image": str(ppm_path),
-                "x": 2,
-                "y": 2,
-                "w": 5,
-                "h": 5,
-                "color": "blue"
-            })
-            
-            makesample(json_input)
-            
-            # Check that samples directory was created
-            samples_dir = self.test_dir / 'test.samples'
-            self.assertTrue(samples_dir.exists())
-            
-            # Check that sample file was created
-            sample_file = samples_dir / '2_2_5_5.blue'
-            self.assertTrue(sample_file.exists())
-            
-            # Verify the sample is correct size
-            with Image.open(sample_file) as sample_img:
-                self.assertEqual(sample_img.size, (5, 5))
-                self.assertEqual(sample_img.format, 'PPM')
-                
-        def test_makesample_invalid_json(self):
-            """Test makesample with invalid JSON"""
-            with self.assertRaises(SystemExit):
-                makesample('{"invalid": json}')
-                
-        def test_makesample_missing_parameters(self):
-            """Test makesample with missing parameters"""
-            json_input = json.dumps({"image": "test.ppm", "x": 0, "y": 0})
-            with self.assertRaises(SystemExit):
-                makesample(json_input)
-                
-        def test_makesample_non_ppm_image(self):
-            """Test makesample with non-PPM image"""
-            json_input = json.dumps({
-                "image": str(self.test_image_path),  # This is a JPG
-                "x": 0,
-                "y": 0,
-                "w": 5,
-                "h": 5,
-                "color": "red"
-            })
-            with self.assertRaises(SystemExit):
-                makesample(json_input)
-                
-        def test_makesample_coordinates_out_of_bounds(self):
-            """Test makesample with coordinates exceeding image bounds"""
-            ppm_path = self.test_dir / 'test.ppm'
-            self.test_image.save(ppm_path, format='PPM')
-            
-            json_input = json.dumps({
-                "image": str(ppm_path),
-                "x": 8,
-                "y": 8,
-                "w": 5,  # This would go beyond the 10x10 image
-                "h": 5,
-                "color": "green"
-            })
-            with self.assertRaises(SystemExit):
-                makesample(json_input)
-                
-        def test_train_basic_setup(self):
-            """Test that train function can be called without crashing on basic setup"""
-            # Create PPM files with different colors
-            ppm_path1 = self.test_dir / 'sample1.ppm'
-            ppm_path2 = self.test_dir / 'sample2.ppm'
-            
-            # Create test images
-            red_img = Image.new('RGB', (50, 50), color='red')
-            blue_img = Image.new('RGB', (50, 50), color='blue')
-            
-            red_img.save(ppm_path1, format='PPM')
-            blue_img.save(ppm_path2, format='PPM')
-            
-            # Create samples directory structure
-            samples_dir = self.test_dir / 'test.samples'
-            samples_dir.mkdir()
-            
-            # Copy files with proper naming
-            shutil.copy(ppm_path1, samples_dir / '0_0_50_50.red')
-            shutil.copy(ppm_path2, samples_dir / '0_0_50_50.blue')
-            
-            # Test train with minimal iterations
-            json_input = json.dumps({
-                "samples": str(samples_dir),
-                "window": 20,
-                "traincount": 2
-            })
-            
-            # This should not crash (we're just testing the setup)
-            try:
-                train_model(json_input)
-            except Exception as e:
-                # Allow for missing PyTorch or other dependencies in test environment
-                if "No module named" in str(e):
-                    self.skipTest(f"Skipping due to missing dependency: {e}")
-                else:
-                    raise
-    
-    # Run the tests
-    suite = unittest.TestLoader().loadTestsFromTestCase(TestAnalyzer)
-    runner = unittest.TextTestRunner(verbosity=2)
-    result = runner.run(suite)
-    
-    # Exit with error code if tests failed
-    if not result.wasSuccessful():
-        sys.exit(1)
-    else:
-        print("All tests passed!")
+def print_usage():
+    """Print usage information"""
+    print("Analyzer - Image analysis tools")
+    print("\nUsage examples:")
+    print("  --normalize <image_file>")
+    print("    Example: --normalize 'image.jpg'")
+    print()
+    print("  --makesample '{\"image\":\"<string>\",\"x\":<int>,\"y\":<int>,\"w\":<int>,\"h\":<int>,\"color\":\"<string>\"}'")
+    print("    Example: --makesample '{\"image\":\"test.ppm\",\"x\":10,\"y\":20,\"w\":50,\"h\":50,\"color\":\"blue\"}'")
+    print()
+    print("  --sampleselector <image_file>")
+    print("    Example: --sampleselector 'test.ppm'")
+    print("    Interactive tool for selecting samples with mouse")
+    print()
+    print("  --train '{\"samples\":\"<string>\",\"window\":<int>,\"traincount\":<int>}' [--model <model_file>]")
+    print("    Example: --train '{\"samples\":\"test.samples\",\"window\":50,\"traincount\":1000}'")
+    print()
+    print("  --test '{\"samples\":\"<string>\",\"window\":<int>,\"testcount\":<int>}' --model <model_file>")
+    print("    Example: --test '{\"samples\":\"test.samples\",\"window\":50,\"testcount\":100}' --model 50.model")
+    print()
+    print("  --makemask '{\"image\":\"<string>\"}' --model <model_file>")
+    print("    Example: --makemask '{\"image\":\"test.ppm\"}' --model 50.model")
+    print()
+    print("  --unittest")
+    print("    Run unit tests")
 
 def main():
     parser = argparse.ArgumentParser(description='Analyzer - Image analysis tools')
     parser.add_argument('--normalize', type=str, help='Normalize image to PPM P6 format')
     parser.add_argument('--makesample', type=str, help='Create sample subimage from JSON parameters')
+    parser.add_argument('--sampleselector', type=str, help='Interactive sample selection tool')
     parser.add_argument('--train', type=str, help='Train neural network on samples from JSON parameters')
     parser.add_argument('--test', type=str, help='Test neural network model on samples from JSON parameters')
     parser.add_argument('--makemask', type=str, help='Create mask bitmap from JSON parameters')
@@ -609,6 +62,8 @@ def main():
             normalize_image(args.normalize)
         elif args.makesample:
             makesample(args.makesample)
+        elif args.sampleselector:
+            sampleselector(args.sampleselector)
         elif args.train:
             train_model(args.train, args.model)
         elif args.test:
@@ -616,25 +71,7 @@ def main():
         elif args.makemask:
             makemask(args.makemask, args.model)
         else:
-            print("Analyzer - Image analysis tools")
-            print("\nUsage examples:")
-            print("  --normalize <image_file>")
-            print("    Example: --normalize 'image.jpg'")
-            print()
-            print("  --makesample '{\"image\":\"<string>\",\"x\":<int>,\"y\":<int>,\"w\":<int>,\"h\":<int>,\"color\":\"<string>\"}'")
-            print("    Example: --makesample '{\"image\":\"test.ppm\",\"x\":10,\"y\":20,\"w\":50,\"h\":50,\"color\":\"blue\"}'")
-            print()
-            print("  --train '{\"samples\":\"<string>\",\"window\":<int>,\"traincount\":<int>}' [--model <model_file>]")
-            print("    Example: --train '{\"samples\":\"test.samples\",\"window\":50,\"traincount\":1000}'")
-            print()
-            print("  --test '{\"samples\":\"<string>\",\"window\":<int>,\"testcount\":<int>}' --model <model_file>")
-            print("    Example: --test '{\"samples\":\"test.samples\",\"window\":50,\"testcount\":100}' --model 50.model")
-            print()
-            print("  --makemask '{\"image\":\"<string>\"}' --model <model_file>")
-            print("    Example: --makemask '{\"image\":\"test.ppm\"}' --model 50.model")
-            print()
-            print("  --unittest")
-            print("    Run unit tests")
+            print_usage()
             
     except Exception as e:
         print(f"Error: {e}")
